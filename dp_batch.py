@@ -81,7 +81,7 @@ class Batch:
 
     def preprocess_label_upToCenters(self, label_path):
         stack = []
-        voidClass = np.full([self.IMAGE_HW, self.IMAGE_HW], 1)
+        voidClass = np.full([self.IMAGE_HW, self.IMAGE_HW], 0.9)
         stack_centerx, stack_centery, stack_centerz = [], [], []
         with open(label_path, "r") as file:
             gts = file.readlines()

@@ -22,10 +22,11 @@ class DP:
         self.labels_lr = 0.0001
         self.labels_mm = 0.9
         self.labels_gClip = 5.0
-        self.centers_lr = 0.0001
+        self.labels_l2_alpha = 0.01
+        self.centers_lr = 0.00001
         self.centers_mm = 0.9
         self.centers_gClip = 5.0
-        self.pose_lr = 0.0001
+        self.pose_lr = 0.00001
         self.pose_mm = 0.9
         self.pose_gClip = 5.0
         self.roi_pool_h = 7
@@ -40,6 +41,9 @@ class DP:
             path = os.path.join(path, "vgg16.npy")
             vgg16_npy_path = path
         self.data_dict = np.load(vgg16_npy_path, encoding='latin1', allow_pickle=True).item()
+
+        ''' Tensorboard '''
+        self.use_tb_summary = False
 
         ''' Object pose estimation '''
         self.n_classes = n_classes
@@ -89,9 +93,9 @@ class DP:
 
         ''' VGG16 ends here; Branches begins here '''
         self.build_labels_branch()
-        self.build_centers_branch()
-        self.build_pose_branch()
-        self.build_observation_nodes()
+        #self.build_centers_branch()
+        #self.build_pose_branch()
+        #self.build_observation_nodes()
 
     def build_labels_branch(self):
         self.filt6_1_1 = self.filter_variable([1, 1, 512, 64], "filt6_1_1")
@@ -118,17 +122,24 @@ class DP:
         self.bias8_1 = self.bias_variable([self.n_classes], "bias8_1")
         self.conv8_1 = self.conv_layer(self.deconv7_2, self.filt8_1, self.bias8_1, "SAME", "conv8_1")
 
-        self.labels_probs = tf.nn.softmax(self.conv8_1, name="labels_probs", axis=-1)
-        self.labels_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=self.LABEL, logits=self.conv8_1, axis=-1, name="labels_loss"))
+        self.labels_probs = tf.nn.softmax(self.conv8_1, name="labels_probs")
+        self.labels_loss = tf.reduce_mean(tf.nn.weighted_cross_entropy_with_logits(targets=self.LABEL, logits=self.conv8_1, pos_weight=1.5, name="labels_loss"))
+        #self.labels_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=self.LABEL, logits=self.conv8_1, name="labels_loss"))
+        #self.labels_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=self.LABEL, logits=self.conv8_1, name="labels_loss")) + self.labels_l2_alpha * (tf.nn.l2_loss(self.filt8_1) + tf.nn.l2_loss(self.filt7_2) + tf.nn.l2_loss(self.filt6_1_2) + tf.nn.l2_loss(self.filt6_2) + tf.nn.l2_loss(self.filt6_1_1))
         #self.labels_loss = tf.reduce_mean(-tf.reduce_sum(tf.multiply(LABEL * tf.log(self.labels_probs + 1e-10), tf.ones(self.n_classes)), axis=[3]))
-        #optimizer = tf.train.AdamOptimizer(self.labels_lr) #.minimize(self.labels_loss, name = 'labels_train')
-        optimizer = tf.train.MomentumOptimizer(learning_rate=self.labels_lr, momentum=self.labels_mm, use_nesterov=True) #.minimize(self.labels_loss, global_step=self.global_step)
-        gradients, variables = zip(*optimizer.compute_gradients(self.labels_loss))
+        #self.labels_loss = tf.reduce_mean(tf.nn.weighted_cross_entropy_with_logits(labels=self.LABEL, logits=self.conv8_1, pos_weight=))
+        optimizer = tf.train.AdamOptimizer(self.labels_lr) #.minimize(self.labels_loss, name = 'labels_train')
+        #optimizer = tf.train.MomentumOptimizer(learning_rate=self.labels_lr, momentum=self.labels_mm, use_nesterov=True)
+        gradients, variables = zip(*optimizer.compute_gradients(self.labels_loss, var_list=[
+            self.bias8_1, self.filt8_1, self.bias7_2, self.filt7_2, self.bias6_1_2, self.filt6_1_2,
+            self.bias6_2, self.filt6_2, self.bias6_1_1, self.filt6_1_1
+        ]))
         gradients, _ = tf.clip_by_global_norm(gradients, self.labels_gClip)
         self.labels_train = optimizer.apply_gradients(zip(gradients, variables))
         self.labels_pred_correct = tf.equal(tf.argmax(self.labels_probs, -1), tf.argmax(self.LABEL, -1), name = 'labels_pred_correct') 
         self.labels_pred_accuracy = tf.reduce_mean(tf.cast(self.labels_pred_correct, dtype=tf.float32), name = 'labels_pred_accuracy')
         self.labels_pred = tf.argmax(self.labels_probs, -1)
+        self.argmax_label = tf.argmax(self.LABEL, -1)
 
     def build_centers_branch(self):
         self.c_filt6_1_1 = self.filter_variable([1, 1, 512, 128], "c_filt6_1_1")
@@ -158,7 +169,10 @@ class DP:
         self.centers_loss = tf.losses.absolute_difference(labels=self.CENTER, predictions=self.c_conv8_1)
         #optimizer = tf.train.AdamOptimizer(self.centers_lr) #.minimize(self.centers_loss, name="centers_train")
         optimizer = tf.train.MomentumOptimizer(learning_rate=self.centers_lr, momentum=self.centers_mm, use_nesterov=True) #.minimize(self.centers_loss, global_step=self.global_step)
-        gradients, variables = zip(*optimizer.compute_gradients(self.centers_loss))
+        gradients, variables = zip(*optimizer.compute_gradients(self.centers_loss, var_list=[
+            self.c_bias8_1, self.c_filt8_1, self.c_bias7_2, self.c_filt7_2, self.c_bias6_1_2, self.c_filt6_1_2, self.c_bias6_2,
+            self.c_filt6_2, self.c_bias6_1_1, self.c_filt6_1_1
+        ]))
         gradients, _ = tf.clip_by_global_norm(gradients, self.centers_gClip)
         self.centers_train = optimizer.apply_gradients(zip(gradients, variables))
         self.centers_pred_correct = tf.equal(self.c_conv8_1, self.CENTER, name = "centers_pred_correct") 
@@ -182,7 +196,9 @@ class DP:
         self.pose_loss = SLoss(self.QUAT, self.fc10_3, self.COORDS, self.n_classes - 1, self.no_of_points)
         #optimizer = tf.train.AdamOptimizer(self.pose_lr) #.minimize(self.pose_loss, name="pose_train")
         optimizer = tf.train.MomentumOptimizer(learning_rate=self.pose_lr, momentum=self.pose_mm, use_nesterov=True)
-        gradients, variables = zip(*optimizer.compute_gradients(self.pose_loss))
+        gradients, variables = zip(*optimizer.compute_gradients(self.pose_loss, var_list=[
+            self.b_fc10_3, self.W_fc10_3
+        ]))
         gradients, _ = tf.clip_by_global_norm(gradients, self.pose_gClip)
         self.pose_train = optimizer.apply_gradients(zip(gradients, variables))
         self.pose_pred_accuracy = SLoss_accuracy(self.QUAT, self.fc10_3, self.n_classes - 1)
@@ -297,4 +313,13 @@ class DP:
         initializer = tf.contrib.layers.xavier_initializer()
         B_xavier = tf.Variable(initializer(shape))
         return B_xavier
+    
+    def attach_summary(self, sess, dir_name):
+        self.use_tb_summary = True
+        tf.summary.scalar('labels_loss', self.labels_loss)
+        tf.summary.scalar('labels_accuracy', self.labels_pred_accuracy)
+        self.merged = tf.summary.merge_all()
+        timestamp = datetime.datetime.now().strftime('%d-%m-%Y_%H-%M-%S')
+        filepath = os.path.join(os.getcwd(), 'logs', str(dir_name), timestamp)
+        self.train_writer = tf.summary.FileWriter(filepath)
     

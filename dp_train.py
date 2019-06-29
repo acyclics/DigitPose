@@ -5,6 +5,7 @@ import os
 import tensorflow as tf
 import pathlib
 from dp_houghVL import Hough
+import cv2
 
 IMAGE_HW = 224
 
@@ -45,7 +46,7 @@ def train_DP():
     N_eval = 10
 
     ''' Create Saver '''
-    saver = tf.train.Saver(max_to_keep=1)
+    saver = tf.train.Saver(max_to_keep=2)
     
     ''' Info '''
     max_labels, max_centers, max_pose = (0.0, 0), (0.0, 0), (0.0, 0)
@@ -55,39 +56,48 @@ def train_DP():
     cfg = tf.ConfigProto(gpu_options=gpu_options)
     with tf.Session(config=cfg) as sess:
         sess.run(tf.global_variables_initializer())
+        #saver.restore(sess, "./models/dp_train_1img_justlabels_1st/model.ckpt-0")
         avg_acc_label, avg_acc_center, avg_acc_pose = 0, 0, 0
         for epochs in range(N_epochs):
             RGB, LABEL, stack_centerxyz, oriens, coords = batch.get_image_and_label_ALL()
-            feed_dict = {poseCNN.RGB: RGB, poseCNN.LABEL: LABEL, poseCNN.CENTER: stack_centerxyz}
-            _, _, labels_pred, directions = sess.run([poseCNN.labels_train,
-                                                      poseCNN.centers_train, poseCNN.labels_pred,
-                                                      poseCNN.c_conv8_1], feed_dict=feed_dict)
-            directions = np.moveaxis(directions[0], -1, 0)
-            hough_layer = Hough(n_classes, IMAGE_HW)
-            hough_layer.cast_votes(labels_pred[0], directions[0], directions[1], directions[2])
-            rois = hough_layer.get_rois()
-            feed_dict = {poseCNN.RGB: RGB, poseCNN.ROIS: [rois], poseCNN.QUAT: oriens, poseCNN.COORDS: coords}
-            sess.run(poseCNN.pose_train, feed_dict)
+            feed_dict = {poseCNN.RGB: RGB, poseCNN.LABEL: LABEL}
+            sess.run(poseCNN.labels_train, feed_dict=feed_dict)
+            #_, _, labels_pred, directions = sess.run([poseCNN.labels_train,
+            #                                          poseCNN.centers_train, poseCNN.labels_pred,
+            #                                          poseCNN.c_conv8_1], feed_dict=feed_dict)
+            #directions = np.moveaxis(directions[0], -1, 0)
+            #hough_layer = Hough(n_classes, IMAGE_HW)
+            #hough_layer.cast_votes(labels_pred[0], directions[0], directions[1], directions[2])
+            #rois = hough_layer.get_rois()
+            #feed_dict = {poseCNN.RGB: RGB, poseCNN.ROIS: [rois], poseCNN.QUAT: oriens, poseCNN.COORDS: coords}
+            #sess.run(poseCNN.pose_train, feed_dict)
 
             if (epochs + 1) % 100 == 0:
-                RGB, LABEL, stack_centerxyz, oriens, coords = batch.get_image_and_label_ALL()
-                feed_dict_labels = {poseCNN.RGB: RGB, poseCNN.LABEL: LABEL}
-                labels_acc = poseCNN.labels_pred_accuracy.eval(feed_dict=feed_dict_labels)
-                feed_dict_centers = {poseCNN.RGB: RGB, poseCNN.CENTER: stack_centerxyz}
-                centers_acc = poseCNN.centers_pred_accuracy.eval(feed_dict=feed_dict_centers)
-                feed_dict_pose = {poseCNN.RGB: RGB, poseCNN.ROIS: [rois], poseCNN.QUAT: oriens, poseCNN.COORDS: coords}
-                pose_acc = poseCNN.pose_pred_accuracy.eval(feed_dict=feed_dict_pose)
-                print("Epoch: {0}    |   Labels acc: {1:.4f}   |   Centers acc: {2:.4f}    |   Pose acc: {3:.4f}".format(epochs, labels_acc, centers_acc, pose_acc))
-                saver.save(sess, './models/dp_train_1000imgs/model.ckpt', global_step=poseCNN.global_step)
+                avg_labels_acc = 0
+                for e in range(N_eval):
+                    RGB, LABEL, stack_centerxyz, oriens, coords = batch.get_image_and_label_ALL()
+                    feed_dict_labels = {poseCNN.RGB: RGB, poseCNN.LABEL: LABEL}
+                    labels_acc = poseCNN.labels_pred_accuracy.eval(feed_dict=feed_dict_labels)
+                    avg_labels_acc += labels_acc
+                if poseCNN.use_tb_summary:
+                    train_summary = sess.run(poseCNN.merged, feed_dict = feed_dict_train)
+                    poseCNN.train_writer.add_summary(train_summary, poseCNN.global_step)
+                print("Epoch:", epochs, "|  Labels accuracy =", avg_labels_acc / 10.0)
+                #feed_dict_centers = {poseCNN.RGB: RGB, poseCNN.CENTER: stack_centerxyz}
+                #centers_acc = poseCNN.centers_pred_accuracy.eval(feed_dict=feed_dict_centers)
+                #feed_dict_pose = {poseCNN.RGB: RGB, poseCNN.ROIS: [rois], poseCNN.QUAT: oriens, poseCNN.COORDS: coords}
+                #pose_acc = poseCNN.pose_pred_accuracy.eval(feed_dict=feed_dict_pose)
+                #print("Epoch: {0}    |   Labels acc: {1:.4f}   |   Centers acc: {2:.4f}    |   Pose acc: {3:.4f}".format(epochs, labels_acc, centers_acc, pose_acc))
+                saver.save(sess, './models/dp_train_colored_justlabels_3rd/model.ckpt', global_step=poseCNN.global_step)
 
-                if max_labels[0] <= labels_acc:
-                    max_labels = (labels_acc, epochs)
-                if max_centers[0] <= centers_acc:
-                    max_centers = (centers_acc, epochs)
-                if max_pose[0] <= pose_acc:
-                    max_pose = (pose_acc, epochs)
+                #if max_labels[0] <= labels_acc:
+                #    max_labels = (labels_acc, epochs)
+                #if max_centers[0] <= centers_acc:
+                #    max_centers = (centers_acc, epochs)
+                #if max_pose[0] <= pose_acc:
+                #    max_pose = (pose_acc, epochs)
                 
-                print("BESTS|   Labels acc: {0:.4f}, epochs: {1}  |   Centers acc: {2:.4f}, epochs: {3}  |   Pose acc: {4:.4f}, epochs: {5}".format(max_labels[0], max_labels[1], max_centers[0], max_centers[1], max_pose[0], max_pose[1]))
+                #print("BESTS|   Labels acc: {0:.4f}, epochs: {1}  |   Centers acc: {2:.4f}, epochs: {3}  |   Pose acc: {4:.4f}, epochs: {5}".format(max_labels[0], max_labels[1], max_centers[0], max_centers[1], max_pose[0], max_pose[1]))
 
 train_DP()
 
