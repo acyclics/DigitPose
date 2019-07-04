@@ -1,325 +1,301 @@
-'''
-Papers: 
-https://arxiv.org/pdf/1711.00199.pdf
-'''
-import tensorflow as tf
-import numpy as np
-import cv2
+from __future__ import print_function
+from six.moves import xrange
+from dp_batch import Batch
 from dp_roipool import ROIPoolingLayer
 from dp_shapematchloss import SLoss, SLoss_accuracy
-import sys
+from dp_labelsloss import weighted_PixelWise_CrossEntropy
+import tensorflow as tf
+import numpy as np
+import TensorflowUtils as utils
 import datetime
+import scipy.io
 import os
-
-VGG_MEAN = [103.939, 116.779, 123.68]
-
-''' General functions '''
-''' END of General functions '''
+import pathlib
+import cv2
 
 class DP:
-    def __init__(self, n_classes, n_points, IMAGE_HW=224, vgg16_npy_path=None):        
-        ''' Hyper-parameters '''
-        self.labels_lr = 0.0001
-        self.labels_mm = 0.9
-        self.labels_gClip = 5.0
-        self.labels_l2_alpha = 0.01
-        self.centers_lr = 0.00001
-        self.centers_mm = 0.9
-        self.centers_gClip = 5.0
-        self.pose_lr = 0.00001
-        self.pose_mm = 0.9
-        self.pose_gClip = 5.0
+    def __init__(self, debug, n_classes, n_points, IMAGE_WH, model_dir):
+        ''' Settings '''
+        self.debug = debug
+        self.n_classes = n_classes
+        self.n_points = n_points
+        self.IMAGE_WH = IMAGE_WH
+
+        ''' VGG19 '''
+        self.model_dir = model_dir
+
+        ''' General variables '''
+        self.image = tf.placeholder(tf.float32, shape=[None, IMAGE_WH, IMAGE_WH, 3], name="input_image")
+
+        ''' Labels branch hyperparameters '''
+        self.labels_learning_rate = 1e-4
+
+        ''' Centers branch hyperparameters '''
+        self.centers_learning_rate = 1e-4
+
+        ''' Pose branch hyperparameters '''
+        self.pose_learning_rate = 1e-4
         self.roi_pool_h = 7
         self.roi_pool_w = 7
-        self.no_of_points = n_points
-        self.TRUNCATE = 0
-        
-        ''' VGG16 '''
-        if vgg16_npy_path is None:
-            path = inspect.getfile(Vgg16)
-            path = os.path.abspath(os.path.join(path, os.pardir))
-            path = os.path.join(path, "vgg16.npy")
-            vgg16_npy_path = path
-        self.data_dict = np.load(vgg16_npy_path, encoding='latin1', allow_pickle=True).item()
 
-        ''' Tensorboard '''
-        self.use_tb_summary = False
-
-        ''' Object pose estimation '''
-        self.n_classes = n_classes
-        self.IMAGE_HW = IMAGE_HW
-
-        ''' Labels branch variables '''
-        self.RGB = tf.placeholder(dtype=tf.float32, shape=[1, IMAGE_HW, IMAGE_HW, 3])
-        self.LABEL = tf.placeholder(dtype=tf.float32, shape=[1, IMAGE_HW, IMAGE_HW, self.n_classes])
-
-        ''' Centers branch variables '''
-        self.CENTER = tf.placeholder(dtype=tf.float32, shape=[1, IMAGE_HW, IMAGE_HW, 3 * (self.n_classes - 1)])
-
-        ''' Pose branch variables '''
-        self.ROIS = tf.placeholder(dtype=tf.float32, shape=[1, None, 4])
-        self.QUAT = tf.placeholder(dtype=tf.float32, shape=[1, 4 * (self.n_classes - 1)])
-        self.COORDS = tf.placeholder(dtype=tf.float32, shape=[n_points, 1, 3])
+        self.build_graph()
     
     def build_graph(self):
-        ''' Create variables needed '''
-        self.global_step = tf.train.get_or_create_global_step()
-
-        ''' Build VGG16 '''
-        rgb_scaled = self.rgb_to_255(self.RGB)
-        bgr = self.rgb_to_bgr(rgb_scaled)
-
-        self.conv1_1 = self.vgg16_conv_layer(bgr, "conv1_1")
-        self.conv1_2 = self.vgg16_conv_layer(self.conv1_1, "conv1_2")
-        self.pool1 = self.vgg16_max_pool(self.conv1_2, 'pool1')
-
-        self.conv2_1 = self.vgg16_conv_layer(self.pool1, "conv2_1")
-        self.conv2_2 = self.vgg16_conv_layer(self.conv2_1, "conv2_2")
-        self.pool2 = self.vgg16_max_pool(self.conv2_2, 'pool2')
-
-        self.conv3_1 = self.vgg16_conv_layer(self.pool2, "conv3_1")
-        self.conv3_2 = self.vgg16_conv_layer(self.conv3_1, "conv3_2")
-        self.conv3_3 = self.vgg16_conv_layer(self.conv3_2, "conv3_3")
-        self.pool3 = self.vgg16_max_pool(self.conv3_3, 'pool3')
-
-        self.conv4_1 = self.vgg16_conv_layer(self.pool3, "conv4_1")
-        self.conv4_2 = self.vgg16_conv_layer(self.conv4_1, "conv4_2")
-        self.conv4_3 = self.vgg16_conv_layer(self.conv4_2, "conv4_3")
-        self.pool4 = self.vgg16_max_pool(self.conv4_3, 'pool4')
-
-        self.conv5_1 = self.vgg16_conv_layer(self.pool4, "conv5_1")
-        self.conv5_2 = self.vgg16_conv_layer(self.conv5_1, "conv5_2")
-        self.conv5_3 = self.vgg16_conv_layer(self.conv5_2, "conv5_3")
-
-        ''' VGG16 ends here; Branches begins here '''
+        """
+        Semantic segmentation network definition
+        :param image: input image. Should have values in range 0-255
+        :param keep_prob:
+        :return:
+        """
+        print("setting up vgg initialized conv layers ...")
+        model_data = scipy.io.loadmat(self.model_dir)
+        mean = model_data['normalization'][0][0][0]
+        mean_pixel = np.mean(mean, axis=(0, 1))
+        weights = np.squeeze(model_data['layers'])
+        processed_image = utils.process_image(self.image, mean_pixel)
+        self.image_net = self.vgg_net(weights, processed_image)
         self.build_labels_branch()
-        #self.build_centers_branch()
+        self.build_centers_branch()
         #self.build_pose_branch()
-        #self.build_observation_nodes()
 
     def build_labels_branch(self):
-        self.filt6_1_1 = self.filter_variable([1, 1, 512, 64], "filt6_1_1")
-        self.bias6_1_1 = self.bias_variable([64], "bias6_1_1")
-        self.conv6_1_1 = self.conv_layer(self.conv5_3, self.filt6_1_1, self.bias6_1_1, "SAME", "conv6_1_1")
+        self.labels_keep_probability = tf.placeholder(tf.float32, name="labels_keep_probabilty")
+        self.labels_annotation = tf.placeholder(tf.int32, shape=[None, self.IMAGE_WH, self.IMAGE_WH, 1], name="labels_annotation")
+        _, labels_logits = self.build_labels_layers(self.image, self.labels_keep_probability)
+        labels_loss = tf.reduce_mean((tf.nn.sparse_softmax_cross_entropy_with_logits(logits=labels_logits,
+                                                                              labels=tf.squeeze(self.labels_annotation, squeeze_dims=[3]),
+                                                                              name="labels_entropy")))
+        labels_loss_summary = tf.summary.scalar("labels_entropy", labels_loss)
+        labels_trainable_var = tf.trainable_variables(scope="labels")
+        if self.debug:
+            for var in labels_trainable_var:
+                utils.add_to_regularization_and_summary(var)
+        self.labels_train_op = self.build_labels_optimizer(labels_loss, labels_trainable_var)
+        self.labels_pred = tf.argmax(tf.nn.softmax(labels_logits, axis=-1), axis=-1)
+        labels_pred_correct = tf.equal(self.labels_pred, tf.argmax(tf.squeeze(self.labels_annotation, squeeze_dims=[3]), -1), name="labels_pred_correct") 
+        self.labels_pred_accuracy = tf.reduce_mean(tf.cast(labels_pred_correct, dtype=tf.float32), name="labels_pred_accuracy")
 
-        # shape6_2 = [14, int(IMAGE_HW / 8), int(IMAGE_HW / 8), 64]
-        self.filt6_2 = self.filter_variable([2, 2, 64, 64], "filt6_2")
-        self.bias6_2 = self.bias_variable([64], "bias6_2")
-        self.deconv6_2 = self.deconv_layer(self.conv6_1_1, self.filt6_2, 2, 64, "SAME", "deconv6_2")
+        print("Setting up labels summary op...")
+        labels_summary_op = tf.summary.merge_all()
+    
+    def build_labels_layers(self, image, keep_prob):
+        with tf.variable_scope("labels"):
+            pool5 = utils.max_pool_2x2(self.image_net["conv5_3"])
 
-        # shape6_1_2 = [28, int(IMAGE_HW / 8), int(IMAGE_HW / 8), 64]
-        self.filt6_1_2 = self.filter_variable([1, 1, 512, 64], "filt6_1_2") # Note that for deconv, order is output channels then input channels
-        self.bias6_1_2 = self.bias_variable([64], "bias6_1_2")
-        self.conv6_1_2 = self.conv_layer(self.conv4_3, self.filt6_1_2, self.bias6_1_2, "SAME", "conv6_1_2")
+            W6 = utils.weight_variable([7, 7, 512, 4096], name="W6")
+            b6 = utils.bias_variable([4096], name="b6")
+            conv6 = utils.conv2d_basic(pool5, W6, b6)
+            relu6 = tf.nn.relu(conv6, name="relu6")
+            if self.debug:
+                utils.add_activation_summary(relu6)
+            relu_dropout6 = tf.nn.dropout(relu6, keep_prob=keep_prob)
 
-        self.add7_1 = tf.keras.layers.Add()([self.deconv6_2, self.conv6_1_2])
-        # shape7_2 = [28, IMAGE_HW, IMAGE_HW, 64]
-        self.filt7_2 = self.filter_variable([8, 8, 64, 64], "filt7_2")
-        self.bias7_2 = self.bias_variable([64], "bias7_2")
-        self.deconv7_2 = self.deconv_layer(self.add7_1, self.filt7_2, 8, 64, "SAME", "deconv7_2")
+            W7 = utils.weight_variable([1, 1, 4096, 4096], name="W7")
+            b7 = utils.bias_variable([4096], name="b7")
+            conv7 = utils.conv2d_basic(relu_dropout6, W7, b7)
+            relu7 = tf.nn.relu(conv7, name="relu7")
+            if self.debug:
+                utils.add_activation_summary(relu7)
+            relu_dropout7 = tf.nn.dropout(relu7, keep_prob=keep_prob)
 
-        self.filt8_1 = self.filter_variable([1, 1, 64, self.n_classes], "filt8_1")
-        self.bias8_1 = self.bias_variable([self.n_classes], "bias8_1")
-        self.conv8_1 = self.conv_layer(self.deconv7_2, self.filt8_1, self.bias8_1, "SAME", "conv8_1")
+            W8 = utils.weight_variable([1, 1, 4096, self.n_classes], name="W8")
+            b8 = utils.bias_variable([self.n_classes], name="b8")
+            conv8 = utils.conv2d_basic(relu_dropout7, W8, b8)
+            # annotation_pred1 = tf.argmax(conv8, dimension=3, name="prediction1")
 
-        self.labels_probs = tf.nn.softmax(self.conv8_1, name="labels_probs")
-        self.labels_loss = tf.reduce_mean(tf.nn.weighted_cross_entropy_with_logits(targets=self.LABEL, logits=self.conv8_1, pos_weight=1.5, name="labels_loss"))
-        #self.labels_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=self.LABEL, logits=self.conv8_1, name="labels_loss"))
-        #self.labels_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=self.LABEL, logits=self.conv8_1, name="labels_loss")) + self.labels_l2_alpha * (tf.nn.l2_loss(self.filt8_1) + tf.nn.l2_loss(self.filt7_2) + tf.nn.l2_loss(self.filt6_1_2) + tf.nn.l2_loss(self.filt6_2) + tf.nn.l2_loss(self.filt6_1_1))
-        #self.labels_loss = tf.reduce_mean(-tf.reduce_sum(tf.multiply(LABEL * tf.log(self.labels_probs + 1e-10), tf.ones(self.n_classes)), axis=[3]))
-        #self.labels_loss = tf.reduce_mean(tf.nn.weighted_cross_entropy_with_logits(labels=self.LABEL, logits=self.conv8_1, pos_weight=))
-        optimizer = tf.train.AdamOptimizer(self.labels_lr) #.minimize(self.labels_loss, name = 'labels_train')
-        #optimizer = tf.train.MomentumOptimizer(learning_rate=self.labels_lr, momentum=self.labels_mm, use_nesterov=True)
-        gradients, variables = zip(*optimizer.compute_gradients(self.labels_loss, var_list=[
-            self.bias8_1, self.filt8_1, self.bias7_2, self.filt7_2, self.bias6_1_2, self.filt6_1_2,
-            self.bias6_2, self.filt6_2, self.bias6_1_1, self.filt6_1_1
-        ]))
-        gradients, _ = tf.clip_by_global_norm(gradients, self.labels_gClip)
-        self.labels_train = optimizer.apply_gradients(zip(gradients, variables))
-        self.labels_pred_correct = tf.equal(tf.argmax(self.labels_probs, -1), tf.argmax(self.LABEL, -1), name = 'labels_pred_correct') 
-        self.labels_pred_accuracy = tf.reduce_mean(tf.cast(self.labels_pred_correct, dtype=tf.float32), name = 'labels_pred_accuracy')
-        self.labels_pred = tf.argmax(self.labels_probs, -1)
-        self.argmax_label = tf.argmax(self.LABEL, -1)
+            deconv_shape1 = self.image_net["pool4"].get_shape()
+            W_t1 = utils.weight_variable([4, 4, deconv_shape1[3].value, self.n_classes], name="W_t1")
+            b_t1 = utils.bias_variable([deconv_shape1[3].value], name="b_t1")
+            conv_t1 = utils.conv2d_transpose_strided(conv8, W_t1, b_t1, output_shape=tf.shape(self.image_net["pool4"]))
+            fuse_1 = tf.add(conv_t1, self.image_net["pool4"], name="fuse_1")
+
+            deconv_shape2 = self.image_net["pool3"].get_shape()
+            W_t2 = utils.weight_variable([4, 4, deconv_shape2[3].value, deconv_shape1[3].value], name="W_t2")
+            b_t2 = utils.bias_variable([deconv_shape2[3].value], name="b_t2")
+            conv_t2 = utils.conv2d_transpose_strided(fuse_1, W_t2, b_t2, output_shape=tf.shape(self.image_net["pool3"]))
+            fuse_2 = tf.add(conv_t2, self.image_net["pool3"], name="fuse_2")
+
+            shape = tf.shape(image)
+            deconv_shape3 = tf.stack([shape[0], shape[1], shape[2], self.n_classes])
+            W_t3 = utils.weight_variable([16, 16, self.n_classes, deconv_shape2[3].value], name="W_t3")
+            b_t3 = utils.bias_variable([self.n_classes], name="b_t3")
+            conv_t3 = utils.conv2d_transpose_strided(fuse_2, W_t3, b_t3, output_shape=deconv_shape3, stride=8)
+
+            annotation_pred = tf.argmax(conv_t3, dimension=3, name="prediction")
+
+        return tf.expand_dims(annotation_pred, dim=3), conv_t3
+
+    def build_labels_optimizer(self, loss_val, var_list):
+        labels_optimizer = tf.train.AdamOptimizer(self.labels_learning_rate)
+        labels_grads = labels_optimizer.compute_gradients(loss_val, var_list=var_list)
+        if self.debug:
+            # print(len(var_list))
+            for grad, var in labels_grads:
+                utils.add_gradient_summary(grad, var)
+        return labels_optimizer.apply_gradients(labels_grads)
 
     def build_centers_branch(self):
-        self.c_filt6_1_1 = self.filter_variable([1, 1, 512, 128], "c_filt6_1_1")
-        self.c_bias6_1_1 = self.bias_variable([128], "c_bias6_1_1")
-        self.c_conv6_1_1 = self.conv_layer(self.conv5_3, self.c_filt6_1_1, self.c_bias6_1_1, "SAME", "c_conv6_1_1")
+        self.centers_keep_probability = tf.placeholder(tf.float32, name="centers_keep_probabilty")
+        self.centers_annotation = tf.placeholder(tf.int32, shape=[None, self.IMAGE_WH, self.IMAGE_WH, 3 * (self.n_classes - 1)], name="centers_annotation")
+        self.centers_pred = self.build_centers_layers(self.image, self.centers_keep_probability)
+        #centers_loss = tf.reduce_mean((tf.nn.sparse_softmax_cross_entropy_with_logits(logits=labels_logits,
+        #                                                                      labels=tf.squeeze(labels_annotation, squeeze_dims=[3]),
+        #                                                                      name="centers_entropy")))
+        centers_loss = tf.losses.absolute_difference(labels=self.centers_annotation, predictions=self.centers_pred)
+        centers_loss_summary = tf.summary.scalar("centers_entropy", centers_loss)
+        centers_trainable_var = tf.trainable_variables(scope="centers")
+        if self.debug:
+            for var in centers_trainable_var:
+                utils.add_to_regularization_and_summary(var)
+        self.centers_train_op = self.build_centers_optimizer(centers_loss, centers_trainable_var)
+        centers_pred_correct = tf.equal(tf.cast(self.centers_pred, tf.float32), tf.cast(self.centers_annotation, tf.float32), name="centers_pred_correct") 
+        self.centers_pred_accuracy = tf.reduce_mean(tf.cast(centers_pred_correct, dtype=tf.float32), name="centers_pred_accuracy")
 
-        # shape6_2 = [14, int(IMAGE_HW / 8), int(IMAGE_HW / 8), 64]
-        self.c_filt6_2 = self.filter_variable([2, 2, 128, 128], "c_filt6_2")
-        self.c_bias6_2 = self.bias_variable([128], "c_bias6_2")
-        self.c_deconv6_2 = self.deconv_layer(self.c_conv6_1_1, self.c_filt6_2, 2, 128, "SAME", "c_deconv6_2")
+        print("Setting up centers summary op...")
+        centers_summary_op = tf.summary.merge_all()
+    
+    def build_centers_layers(self, image, keep_prob):
+        with tf.variable_scope("centers"):
+            pool5 = utils.max_pool_2x2(self.image_net["conv5_3"])
 
-        # shape6_1_2 = [28, int(IMAGE_HW / 8), int(IMAGE_HW / 8), 64]
-        self.c_filt6_1_2 = self.filter_variable([1, 1, 512, 128], "c_filt6_1_2") # Note that for deconv, order is output channels then input channels
-        self.c_bias6_1_2 = self.bias_variable([128], "c_bias6_1_2")
-        self.c_conv6_1_2 = self.conv_layer(self.conv4_3, self.c_filt6_1_2, self.c_bias6_1_2, "SAME", "c_conv6_1_2")
+            W6 = utils.weight_variable([7, 7, 512, 4096], name="W6")
+            b6 = utils.bias_variable([4096], name="b6")
+            conv6 = utils.conv2d_basic(pool5, W6, b6)
+            relu6 = tf.nn.relu(conv6, name="relu6")
+            if self.debug:
+                utils.add_activation_summary(relu6)
+            relu_dropout6 = tf.nn.dropout(relu6, keep_prob=keep_prob)
 
-        self.c_add7_1 = tf.keras.layers.Add()([self.c_deconv6_2, self.c_conv6_1_2])
-        # shape7_2 = [28, IMAGE_HW, IMAGE_HW, 64]
-        self.c_filt7_2 = self.filter_variable([8, 8, 128, 128], "c_filt7_2")
-        self.c_bias7_2 = self.bias_variable([128], "c_bias7_2")
-        self.c_deconv7_2 = self.deconv_layer(self.c_add7_1, self.c_filt7_2, 8, 128, "SAME", "c_deconv7_2")
+            W7 = utils.weight_variable([1, 1, 4096, 4096], name="W7")
+            b7 = utils.bias_variable([4096], name="b7")
+            conv7 = utils.conv2d_basic(relu_dropout6, W7, b7)
+            relu7 = tf.nn.relu(conv7, name="relu7")
+            if self.debug:
+                utils.add_activation_summary(relu7)
+            relu_dropout7 = tf.nn.dropout(relu7, keep_prob=keep_prob)
 
-        self.c_filt8_1 = self.filter_variable([1, 1, 128, 3 * (self.n_classes - 1)], "c_filt8_1")
-        self.c_bias8_1 = self.bias_variable([3 * (self.n_classes - 1)], "c_bias8_1")
-        self.c_conv8_1 = self.conv_layer(self.c_deconv7_2, self.c_filt8_1, self.c_bias8_1, "SAME", "c_conv8_1")
+            W8 = utils.weight_variable([1, 1, 4096, self.n_classes], name="W8")
+            b8 = utils.bias_variable([self.n_classes], name="b8")
+            conv8 = utils.conv2d_basic(relu_dropout7, W8, b8)
+            # annotation_pred1 = tf.argmax(conv8, dimension=3, name="prediction1")
 
-        self.centers_loss = tf.losses.absolute_difference(labels=self.CENTER, predictions=self.c_conv8_1)
-        #optimizer = tf.train.AdamOptimizer(self.centers_lr) #.minimize(self.centers_loss, name="centers_train")
-        optimizer = tf.train.MomentumOptimizer(learning_rate=self.centers_lr, momentum=self.centers_mm, use_nesterov=True) #.minimize(self.centers_loss, global_step=self.global_step)
-        gradients, variables = zip(*optimizer.compute_gradients(self.centers_loss, var_list=[
-            self.c_bias8_1, self.c_filt8_1, self.c_bias7_2, self.c_filt7_2, self.c_bias6_1_2, self.c_filt6_1_2, self.c_bias6_2,
-            self.c_filt6_2, self.c_bias6_1_1, self.c_filt6_1_1
-        ]))
-        gradients, _ = tf.clip_by_global_norm(gradients, self.centers_gClip)
-        self.centers_train = optimizer.apply_gradients(zip(gradients, variables))
-        self.centers_pred_correct = tf.equal(self.c_conv8_1, self.CENTER, name = "centers_pred_correct") 
-        self.centers_pred_accuracy = tf.reduce_mean(tf.cast(self.centers_pred_correct, dtype=tf.float32), name="centers_pred_accuracy")
+            deconv_shape1 = self.image_net["pool4"].get_shape()
+            W_t1 = utils.weight_variable([4, 4, deconv_shape1[3].value, self.n_classes], name="W_t1")
+            b_t1 = utils.bias_variable([deconv_shape1[3].value], name="b_t1")
+            conv_t1 = utils.conv2d_transpose_strided(conv8, W_t1, b_t1, output_shape=tf.shape(self.image_net["pool4"]))
+            fuse_1 = tf.add(conv_t1, self.image_net["pool4"], name="fuse_1")
+
+            deconv_shape2 = self.image_net["pool3"].get_shape()
+            W_t2 = utils.weight_variable([4, 4, deconv_shape2[3].value, deconv_shape1[3].value], name="W_t2")
+            b_t2 = utils.bias_variable([deconv_shape2[3].value], name="b_t2")
+            conv_t2 = utils.conv2d_transpose_strided(fuse_1, W_t2, b_t2, output_shape=tf.shape(self.image_net["pool3"]))
+            fuse_2 = tf.add(conv_t2, self.image_net["pool3"], name="fuse_2")
+
+            shape = tf.shape(image)
+            #deconv_shape3 = tf.stack([shape[0], shape[1], shape[2], self.n_classes])
+            deconv_shape3 = tf.stack([shape[0], shape[1], shape[2], 3 * (self.n_classes - 1)])
+            W_t3 = utils.weight_variable([16, 16, 3 * (self.n_classes - 1), deconv_shape2[3].value], name="W_t3")
+            b_t3 = utils.bias_variable([3 * (self.n_classes - 1)], name="b_t3")
+            conv_t3 = utils.conv2d_transpose_strided(fuse_2, W_t3, b_t3, output_shape=deconv_shape3, stride=8)
+
+        return conv_t3
+
+    def build_centers_optimizer(self, loss_val, var_list):
+        centers_optimizer = tf.train.AdamOptimizer(self.centers_learning_rate)
+        centers_grads = centers_optimizer.compute_gradients(loss_val, var_list=var_list)
+        if self.debug:
+            # print(len(var_list))
+            for grad, var in centers_grads:
+                utils.add_gradient_summary(grad, var)
+        return centers_optimizer.apply_gradients(centers_grads)
 
     def build_pose_branch(self):
-        self.roi_layer9_1 = ROIPoolingLayer(self.roi_pool_h, self.roi_pool_w)
-        self.pooled_features9_1 = self.roi_layer9_1([self.conv5_3, self.ROIS])
-        self.pooled_features9_1 = tf.where(tf.is_nan(self.pooled_features9_1), tf.ones_like(self.pooled_features9_1) * self.TRUNCATE, self.pooled_features9_1)
-        self.pooled_features9_1 = tf.where(tf.is_inf(self.pooled_features9_1), tf.ones_like(self.pooled_features9_1) * self.TRUNCATE, self.pooled_features9_1)
-        self.roi_layer9_2 = ROIPoolingLayer(self.roi_pool_h, self.roi_pool_w)
-        self.pooled_features9_2 = self.roi_layer9_2([self.conv4_3, self.ROIS])
-        self.pooled_features9_2 = tf.where(tf.is_nan(self.pooled_features9_2), tf.ones_like(self.pooled_features9_2) * self.TRUNCATE, self.pooled_features9_2)
-        self.pooled_features9_2 = tf.where(tf.is_inf(self.pooled_features9_2), tf.ones_like(self.pooled_features9_2) * self.TRUNCATE, self.pooled_features9_2)
-        self.roi_add9_3 = tf.keras.layers.Add()([self.pooled_features9_1, self.pooled_features9_2])
-        self.fc10_1 = self.vgg16_fc_layer_forRoI(self.roi_add9_3, "fc6")
-        self.fc10_2 = self.vgg16_fc_layer_forRoI_NONFIRST(self.fc10_1, "fc7")
-        self.W_fc10_3 = self.filter_variable([4096, 4 * (self.n_classes - 1)], name="W_fc10_3")
-        self.b_fc10_3 = self.bias_variable([4 * (self.n_classes - 1)], name="b_fc10_3")
-        self.fc10_3 = self.fc_layer(self.fc10_2, self.W_fc10_3, self.b_fc10_3, "fc10_3")
-        self.pose_loss = SLoss(self.QUAT, self.fc10_3, self.COORDS, self.n_classes - 1, self.no_of_points)
-        #optimizer = tf.train.AdamOptimizer(self.pose_lr) #.minimize(self.pose_loss, name="pose_train")
-        optimizer = tf.train.MomentumOptimizer(learning_rate=self.pose_lr, momentum=self.pose_mm, use_nesterov=True)
-        gradients, variables = zip(*optimizer.compute_gradients(self.pose_loss, var_list=[
-            self.b_fc10_3, self.W_fc10_3
-        ]))
-        gradients, _ = tf.clip_by_global_norm(gradients, self.pose_gClip)
-        self.pose_train = optimizer.apply_gradients(zip(gradients, variables))
-        self.pose_pred_accuracy = SLoss_accuracy(self.QUAT, self.fc10_3, self.n_classes - 1)
+        self.pose_keep_probability = tf.placeholder(tf.float32, name="pose_keep_probabilty")
+        self.pose_annotation = tf.placeholder(tf.int32, shape=[None, self.IMAGE_WH, self.IMAGE_WH, 1], name="pose_annotation")
+        self.coordinates = tf.placeholder(dtype=tf.float32, shape=[n_points, 1, 3])
 
-    def build_observation_nodes(self):
-        self.argmax_label = tf.argmax(self.LABEL, -1)
+        pose_pred = self.build_pose_layers(self.image, labels_keep_probability)
+        pose_loss = SLoss(q_true=self.pose_annotation, q_pred=pose_pred, M=self.coordinates, n_classes=self.n_classes - 1, no_of_points=self.n_points)
+        pose_loss_summary = tf.summary.scalar("pose_entropy", pose_loss)
+        pose_trainable_var = tf.trainable_variables(scope="pose")
+        if self.debug:
+            for var in labels_trainable_var:
+                utils.add_to_regularization_and_summary(var)
+        self.pose_train_op = self.build_pose_optimizer(pose_loss, pose_trainable_var)
+        self.pose_pred_accuracy = SLoss_accuracy(q_true=self.pose_annotation, q_pred=pose_pred, n_classes=self.n_classes - 1)
 
-    def rgb_to_255(self, rgb):
-        # Converts rgb from 0-1 to 0-255
-        return rgb * 255.0
+        print("Setting up pose summary op...")
+        pose_summary_op = tf.summary.merge_all()
     
-    def rgb_to_bgr(self, rgb):
-        r, g, b = tf.split(axis=3, num_or_size_splits=3, value=rgb)
-        bgr = tf.concat(axis=3, values=[b - VGG_MEAN[0], g - VGG_MEAN[1], r - VGG_MEAN[2]])
-        return bgr
+    def build_pose_layers(self, image, keep_prob, rois):
+        with tf.variable_scope("pose"):
+            roi_layer6 = ROIPoolingLayer(self.roi_pool_h, self.roi_pool_w)
+            pooled_features6 = roi_layer6([self.image_net["conv5_3"], rois])
+            #pooled_features9_1 = tf.where(tf.is_nan(self.pooled_features9_1), tf.ones_like(self.pooled_features9_1) * self.TRUNCATE, self.pooled_features9_1)
+            #pooled_features9_1 = tf.where(tf.is_inf(self.pooled_features9_1), tf.ones_like(self.pooled_features9_1) * self.TRUNCATE, self.pooled_features9_1)
+            
+            roi_layer7 = ROIPoolingLayer(self.roi_pool_h, self.roi_pool_w)
+            pooled_features7 = roi_layer7([self.image_net["conv4_3"], rois])
+            #pooled_features9_2 = tf.where(tf.is_nan(self.pooled_features9_2), tf.ones_like(self.pooled_features9_2) * self.TRUNCATE, self.pooled_features9_2)
+            #pooled_features9_2 = tf.where(tf.is_inf(self.pooled_features9_2), tf.ones_like(self.pooled_features9_2) * self.TRUNCATE, self.pooled_features9_2)
 
-    def vgg16_avg_pool(self, bottom, name):
-        return tf.nn.avg_pool(bottom, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='SAME', name=name)
-    
-    def vgg16_max_pool(self, bottom, name):
-        return tf.nn.max_pool(bottom, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='SAME', name=name)
-    
-    def vgg16_conv_layer(self, bottom, name):
-        with tf.variable_scope(name):
-            filt = self.vgg16_get_conv_filter(name)
-            conv = tf.nn.conv2d(bottom, filt, [1, 1, 1, 1], padding='SAME')
-            conv_biases = self.vgg16_get_bias(name)
-            bias = tf.nn.bias_add(conv, conv_biases)
-            relu = tf.nn.relu(bias)
-            return relu
+            roi_add8 = tf.add(pooled_features6, pooled_features7, name="roi_add8")
+            
+            '''
+            fc9 = self.vgg16_fc_layer_forRoI(self.roi_add9_3, "fc6")
+            fc10 = self.vgg16_fc_layer_forRoI_NONFIRST(self.fc10_1, "fc7")
+            fc_dropout10 = tf.nn.dropout(fc11, keep_prob=keep_prob)
+            '''
 
-    def conv_layer(self, bottom, filter, bias, padding, name):
-        conv = tf.nn.conv2d(bottom, filter, strides=[1, 1, 1, 1], padding=padding, name=name)
-        bias = tf.nn.bias_add(conv, bias)
-        relu = tf.nn.relu(bias)
-        return relu
+            W11 = utils.weight_variable([4096, 4 * (self.n_classes - 1)], name="W6")
+            b11 = utils.bias_variable([4 * (self.n_classes - 1)], name="b11")
+            fc11 = tf.nn.bias_add(tf.matmul(fc10, W11), b11)
+        
+        return fc11
 
-    def deconv_layer(self, bottom, filter, stride, out_channels, padding, name):
-        in_shape = tf.shape(bottom, out_type=tf.dtypes.int32)
-        h = in_shape[1] * stride
-        w = in_shape[2] * stride
-        new_shape = [in_shape[0], h, w, out_channels]
-        deconv = tf.nn.conv2d_transpose(bottom, output_shape=new_shape, filter=filter, strides=[1, stride, stride, 1], padding=padding, name=name)
-        return deconv
+    def build_pose_optimizer(self, loss_val, var_list):
+        pose_optimizer = tf.train.AdamOptimizer(self.pose_learning_rate)
+        pose_grads = pose_optimizer.compute_gradients(loss_val, var_list=var_list)
+        if self.debug:
+            # print(len(var_list))
+            for grad, var in pose_grads:
+                utils.add_gradient_summary(grad, var)
+        return pose_optimizer.apply_gradients(pose_grads)
 
-    def vgg16_fc_layer(self, bottom, name):
-        with tf.variable_scope(name):
-            shape = bottom.get_shape().as_list()
-            dim = 1
-            for d in shape[1:]:
-                dim *= d
-            x = tf.reshape(bottom, [-1, dim])
-            weights = self.vgg16_get_fc_weight(name)
-            biases = self.vgg16_get_bias(name)
-            # Fully connected layer. Note that the '+' operation automatically
-            # broadcasts the biases.
-            fc = tf.nn.bias_add(tf.matmul(x, weights), biases)
-            return fc
-    
-    def vgg16_fc_layer_forRoI(self, bottom, name):
-        with tf.variable_scope(name):
-            shape = bottom.get_shape().as_list()
-            dim = 1
-            for d in shape[2:]:
-                dim *= d
-            x = tf.reshape(bottom, [-1, dim])
-            weights = self.vgg16_get_fc_weight(name)
-            biases = self.vgg16_get_bias(name)
-            # Fully connected layer. Note that the '+' operation automatically
-            # broadcasts the biases.
-            fc = tf.nn.bias_add(tf.matmul(x, weights), biases)
-            return fc
-    
-    def vgg16_fc_layer_forRoI_NONFIRST(self, bottom, name):
-        with tf.variable_scope(name):
-            shape = bottom.get_shape().as_list()
-            dim = 1
-            for d in shape[1:]:
-                dim *= d
-            x = tf.reshape(bottom, [-1, dim])
-            weights = self.vgg16_get_fc_weight(name)
-            biases = self.vgg16_get_bias(name)
-            # Fully connected layer. Note that the '+' operation automatically
-            # broadcasts the biases.
-            fc = tf.nn.bias_add(tf.matmul(x, weights), biases)
-            return fc
+    def vgg_net(self, weights, image):
+        layers = (
+            'conv1_1', 'relu1_1', 'conv1_2', 'relu1_2', 'pool1',
+            'conv2_1', 'relu2_1', 'conv2_2', 'relu2_2', 'pool2',
 
-    def fc_layer(self, x, weights, bias, name):
-        with tf.variable_scope(name):
-            fc = tf.nn.bias_add(tf.matmul(x, weights), bias)
-        return fc
+            'conv3_1', 'relu3_1', 'conv3_2', 'relu3_2', 'conv3_3',
+            'relu3_3', 'conv3_4', 'relu3_4', 'pool3',
 
-    def vgg16_get_conv_filter(self, name):
-        return tf.constant(self.data_dict[name][0], name="filter")
-    
-    def vgg16_get_bias(self, name):
-        return tf.constant(self.data_dict[name][1], name="biases")
+            'conv4_1', 'relu4_1', 'conv4_2', 'relu4_2', 'conv4_3',
+            'relu4_3', 'conv4_4', 'relu4_4', 'pool4',
 
-    def vgg16_get_fc_weight(self, name):
-        return tf.constant(self.data_dict[name][0], name="weights")
+            'conv5_1', 'relu5_1', 'conv5_2', 'relu5_2', 'conv5_3',
+            'relu5_3', 'conv5_4', 'relu5_4'
+        )
+        net = {}
+        current = image
+        for i, name in enumerate(layers):
+            kind = name[:4]
+            if kind == 'conv':
+                kernels, bias = weights[i][0][0][0][0]
+                # matconvnet: weights are [width, height, in_channels, out_channels]
+                # tensorflow: weights are [height, width, in_channels, out_channels]
+                kernels = utils.get_variable(np.transpose(kernels, (1, 0, 2, 3)), name=name + "_w")
+                bias = utils.get_variable(bias.reshape(-1), name=name + "_b")
+                current = utils.conv2d_basic(current, kernels, bias)
+            elif kind == 'relu':
+                current = tf.nn.relu(current, name=name)
+                if self.debug:
+                    utils.add_activation_summary(current)
+            elif kind == 'pool':
+                current = utils.avg_pool_2x2(current)
+            net[name] = current
+        return net    
 
-    def filter_variable(self, shape, name=None):
-        #initial = tf.truncated_normal(shape, stddev=0.1)
-        #return tf.Variable(initial, name=name)
-        initializer = tf.contrib.layers.xavier_initializer()
-        W_xavier = tf.Variable(initializer(shape))
-        return W_xavier
-
-    def bias_variable(self, shape, name=None):
-        #initial = tf.constant(0.1, shape=shape)
-        #return tf.Variable(initial, name=name)
-        initializer = tf.contrib.layers.xavier_initializer()
-        B_xavier = tf.Variable(initializer(shape))
-        return B_xavier
-    
-    def attach_summary(self, sess, dir_name):
-        self.use_tb_summary = True
-        tf.summary.scalar('labels_loss', self.labels_loss)
-        tf.summary.scalar('labels_accuracy', self.labels_pred_accuracy)
-        self.merged = tf.summary.merge_all()
-        timestamp = datetime.datetime.now().strftime('%d-%m-%Y_%H-%M-%S')
-        filepath = os.path.join(os.getcwd(), 'logs', str(dir_name), timestamp)
-        self.train_writer = tf.summary.FileWriter(filepath)
-    
+    def attach_saver(self):
+        self.use_tf_saver = True
+        self.saver_tf = tf.train.Saver(max_to_keep=2)

@@ -53,17 +53,17 @@ def assess_DP():
     cfg = tf.ConfigProto(gpu_options=gpu_options)
     with tf.Session(config=cfg) as sess:
         #sess.run(tf.global_variables_initializer())
-        saver.restore(sess, "./models/dp_train_colored_justlabels_3rd/model.ckpt-0")
+        saver.restore(sess, "./models/dp_train_weighted_justlabels_BW_11th/model.ckpt")
         avg_acc_label, avg_acc_center, avg_acc_pose = 0, 0, 0
         for epochs in range(N_epochs):
             RGB, LABEL, stack_centerxyz, oriens, coords = batch.get_image_and_label_ALL()
             feed_dict = {poseCNN.RGB: RGB, poseCNN.LABEL: LABEL}
             labels_pred = sess.run(poseCNN.labels_pred, feed_dict=feed_dict)
-            bgr = cv2.cvtColor(RGB[0].astype('float32'), cv2.COLOR_RGB2BGR)
+            #bgr = cv2.cvtColor(RGB[0].astype('float32'), cv2.COLOR_RGB2BGR)
             for x in range(224):
                 for y in range(224):
-                    if labels_pred[0][x][y] != 1:
-                        cv2.circle(bgr, (x, y), 1, (0,0,255), -1)
+                    if labels_pred[0][x][y] == 0:
+                        cv2.circle(RGB[0], (x, y), 1, (0,0,255), -1)
             '''
             directions = np.moveaxis(directions[0], -1, 0)
             hough_layer = Hough(n_classes, 224)
@@ -91,7 +91,7 @@ def assess_DP():
             bgr = cv2.line(bgr, tuple(axisPoints[3].ravel()), tuple(axisPoints[1].ravel()), (0,255,0), 3)
             bgr = cv2.line(bgr, tuple(axisPoints[3].ravel()), tuple(axisPoints[2].ravel()), (0,0,255), 3)
             '''
-            cv2.imshow("image", bgr)
+            cv2.imshow("image", RGB[0])
             cv2.waitKey(0)
 
             '''

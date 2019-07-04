@@ -36,7 +36,9 @@ class Batch:
 
     def preprocess_image(self, image):
         image = cv2.imread(image)
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        #image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        image = cv2.merge((image, image, image))
         image = cv2.resize(image, (self.IMAGE_HW, self.IMAGE_HW))
         #image = image / 255.0
         image = np.asarray(image)
@@ -81,6 +83,7 @@ class Batch:
 
     def preprocess_label_upToCenters(self, label_path):
         stack = []
+        voidClass = np.full([self.IMAGE_HW, self.IMAGE_HW], 1)
         stack_centerx, stack_centery, stack_centerz = [], [], []
         with open(label_path, "r") as file:
             gts = file.readlines()
@@ -93,6 +96,7 @@ class Batch:
                 pts = line.split(',')
                 i = int(pts[0])
                 j = self.IMAGE_HW - 1 - int(pts[1])
+                voidClass[i][j] = 0
                 label[i][j] = 1
                 directionx[i][j] = float(pts[2])
                 directiony[i][j] = -float(pts[3])
@@ -101,6 +105,7 @@ class Batch:
             stack_centerx.append(directionx)
             stack_centery.append(directiony)
             stack_centerz.append(directionz)
+        stack.append(voidClass)
         stack = np.asarray(stack)
         stack = np.moveaxis(stack, 0, -1)
         stack_centerxyz = stack_centerx + stack_centery + stack_centerz
