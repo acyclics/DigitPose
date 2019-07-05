@@ -47,14 +47,14 @@ def train_DP():
     N_eval = 10
 
     ''' Create Saver '''
-    poseCNN.attach_saver()
+    poseCNN.attach_saver(TRAIN_MODE)
     save_file = "./models/dp_train_new_1st/model.ckpt"
     LOAD_MODEL = False
 
     ''' Create TF session '''
-    gpu_options = tf.GPUOptions(polling_inactive_delay_msecs=1000000, allow_growth=True)
-    cfg = tf.ConfigProto(gpu_options=gpu_options)
-    with tf.Session(config=cfg) as sess:
+    config = tf.ConfigProto()
+    config.gpu_options.allow_growth = True
+    with tf.Session(config=config) as sess:
         if not LOAD_MODEL:
             sess.run(tf.global_variables_initializer())
         else:
@@ -82,13 +82,12 @@ def train_DP():
             if (epochs + 1) % 100 == 0:
                 if TRAIN_MODE == "labels":
                     avg_labels_acc = 0
-                    for e in range(N_eval):
-                        RGB, LABEL, stack_centerxyz, oriens, coords = batch.get_image_and_label_ALL()
-                        feed_dict_labels = {poseCNN.image: RGB, poseCNN.labels_annotation: LABEL, poseCNN.labels_keep_probability: 1.0}
-                        labels_acc = poseCNN.labels_pred_accuracy.eval(feed_dict=feed_dict_labels)
-                        avg_labels_acc += labels_acc
-                    print("Epoch:", epochs, "|  Labels accuracy =", avg_labels_acc / 10.0)
-                elif TRAIN_MODE == "centers" and not poseCNN.use_tb_summary:
+                    RGB, LABEL, stack_centerxyz, oriens, coords = batch.get_image_and_label_ALL()
+                    feed_dict_labels = {poseCNN.image: RGB, poseCNN.labels_annotation: LABEL, poseCNN.labels_keep_probability: 1.0}
+                    labels_acc = poseCNN.labels_pred_accuracy.eval(feed_dict=feed_dict_labels)
+                    avg_labels_acc += labels_acc
+                    print("Epoch:", epochs, "|  Labels accuracy =", avg_labels_acc / 1.0)
+                elif TRAIN_MODE == "centers":
                     avg_centers_acc = 0
                     for e in range(N_eval):
                         RGB, LABEL, stack_centerxyz, oriens, coords = batch.get_image_and_label_ALL()
@@ -96,7 +95,7 @@ def train_DP():
                         centers_acc = poseCNN.centers_pred_accuracy.eval(feed_dict=feed_dict_centers)
                         avg_centers_acc += centers_acc
                     print("Epoch:", epochs, "|  Labels accuracy =", avg_centers_acc / 10.0)
-                elif TRAIN_MODE == "pose" and not poseCNN.use_tb_summary:
+                elif TRAIN_MODE == "pose":
                     feed_dict = {poseCNN.image: RGB}
                     labels_pred, directions = sess.run([poseCNN.labels_pred, poseCNN.centers_pred], feed_dict=feed_dict)
                     directions = np.moveaxis(directions[0], -1, 0)
@@ -106,9 +105,6 @@ def train_DP():
                     feed_dict = {poseCNN.image: RGB, poseCNN.rois: [rois], poseCNN.pose_annotation: oriens, poseCNN.coordinates: coords, poseCNN.pose_keep_probability: 1.0}
                     pose_acc = sess.run(poseCNN.pose_pred_accuracy, feed_dict=feed_dict)
                     print("Epoch:", epochs, "|  Labels accuracy =", pose_acc)
-                elif not poseCNN.use_tb_summary:
-                    print("Invalid TRAIN MODE")
-
                 poseCNN.saver_tf.save(sess, save_file)
 
 train_DP()

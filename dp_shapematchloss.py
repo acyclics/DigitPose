@@ -36,7 +36,7 @@ def SLoss(q_true, q_pred, M, n_classes, no_of_points):
     finalLoss = losses[0]
     for f in range(1, n_classes):
         finalLoss = tf.concat([finalLoss, losses[f]], axis=0)
-    return tf.reduce_mean(finalLoss)
+    return tf.reduce_mean(finalLoss, name="pose_loss")
 
 def SLoss_accuracy(q_true, q_pred, n_classes):
     losses = []

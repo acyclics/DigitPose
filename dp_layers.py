@@ -54,9 +54,10 @@ class DP:
         weights = np.squeeze(model_data['layers'])
         processed_image = utils.process_image(self.image, mean_pixel)
         self.image_net = self.vgg_net(weights, processed_image)
+        self.vgg_fc = self.vgg_net_fc(weights)
         self.build_labels_branch()
         self.build_centers_branch()
-        #self.build_pose_branch()
+        self.build_pose_branch()
 
     def build_labels_branch(self):
         self.labels_keep_probability = tf.placeholder(tf.float32, name="labels_keep_probabilty")
@@ -71,7 +72,7 @@ class DP:
             for var in labels_trainable_var:
                 utils.add_to_regularization_and_summary(var)
         self.labels_train_op = self.build_labels_optimizer(labels_loss, labels_trainable_var)
-        self.labels_pred = tf.argmax(tf.nn.softmax(labels_logits, axis=-1), axis=-1)
+        self.labels_pred = tf.argmax(tf.nn.softmax(labels_logits, axis=-1), axis=-1, name="labels_pred")
         labels_pred_correct = tf.equal(self.labels_pred, tf.argmax(tf.squeeze(self.labels_annotation, squeeze_dims=[3]), -1), name="labels_pred_correct") 
         self.labels_pred_accuracy = tf.reduce_mean(tf.cast(labels_pred_correct, dtype=tf.float32), name="labels_pred_accuracy")
 
@@ -126,13 +127,14 @@ class DP:
         return tf.expand_dims(annotation_pred, dim=3), conv_t3
 
     def build_labels_optimizer(self, loss_val, var_list):
-        labels_optimizer = tf.train.AdamOptimizer(self.labels_learning_rate)
-        labels_grads = labels_optimizer.compute_gradients(loss_val, var_list=var_list)
-        if self.debug:
-            # print(len(var_list))
-            for grad, var in labels_grads:
-                utils.add_gradient_summary(grad, var)
-        return labels_optimizer.apply_gradients(labels_grads)
+        with tf.variable_scope("labels"):
+            labels_optimizer = tf.train.AdamOptimizer(self.labels_learning_rate)
+            labels_grads = labels_optimizer.compute_gradients(loss_val, var_list=var_list)
+            if self.debug:
+                # print(len(var_list))
+                for grad, var in labels_grads:
+                    utils.add_gradient_summary(grad, var)
+            return labels_optimizer.apply_gradients(labels_grads)
 
     def build_centers_branch(self):
         self.centers_keep_probability = tf.placeholder(tf.float32, name="centers_keep_probabilty")
@@ -201,20 +203,22 @@ class DP:
         return conv_t3
 
     def build_centers_optimizer(self, loss_val, var_list):
-        centers_optimizer = tf.train.AdamOptimizer(self.centers_learning_rate)
-        centers_grads = centers_optimizer.compute_gradients(loss_val, var_list=var_list)
-        if self.debug:
-            # print(len(var_list))
-            for grad, var in centers_grads:
-                utils.add_gradient_summary(grad, var)
-        return centers_optimizer.apply_gradients(centers_grads)
+        with tf.variable_scope("centers"):
+            centers_optimizer = tf.train.AdamOptimizer(self.centers_learning_rate)
+            centers_grads = centers_optimizer.compute_gradients(loss_val, var_list=var_list)
+            if self.debug:
+                # print(len(var_list))
+                for grad, var in centers_grads:
+                    utils.add_gradient_summary(grad, var)
+            return centers_optimizer.apply_gradients(centers_grads)
 
     def build_pose_branch(self):
         self.pose_keep_probability = tf.placeholder(tf.float32, name="pose_keep_probabilty")
-        self.pose_annotation = tf.placeholder(tf.int32, shape=[None, self.IMAGE_WH, self.IMAGE_WH, 1], name="pose_annotation")
-        self.coordinates = tf.placeholder(dtype=tf.float32, shape=[n_points, 1, 3])
+        self.pose_annotation = tf.placeholder(tf.float32, shape=[1, 4 * (self.n_classes - 1)], name="pose_annotation")
+        self.coordinates = tf.placeholder(tf.float32, shape=[self.n_points, 1, 3], name="pose_coordinates")
+        self.rois = tf.placeholder(tf.float32, shape=[1, None, 4])
 
-        pose_pred = self.build_pose_layers(self.image, labels_keep_probability)
+        pose_pred = self.build_pose_layers(self.image, self.pose_keep_probability, self.rois)
         pose_loss = SLoss(q_true=self.pose_annotation, q_pred=pose_pred, M=self.coordinates, n_classes=self.n_classes - 1, no_of_points=self.n_points)
         pose_loss_summary = tf.summary.scalar("pose_entropy", pose_loss)
         pose_trainable_var = tf.trainable_variables(scope="pose")
@@ -239,28 +243,37 @@ class DP:
             #pooled_features9_2 = tf.where(tf.is_nan(self.pooled_features9_2), tf.ones_like(self.pooled_features9_2) * self.TRUNCATE, self.pooled_features9_2)
             #pooled_features9_2 = tf.where(tf.is_inf(self.pooled_features9_2), tf.ones_like(self.pooled_features9_2) * self.TRUNCATE, self.pooled_features9_2)
 
-            roi_add8 = tf.add(pooled_features6, pooled_features7, name="roi_add8")
-            
-            '''
-            fc9 = self.vgg16_fc_layer_forRoI(self.roi_add9_3, "fc6")
-            fc10 = self.vgg16_fc_layer_forRoI_NONFIRST(self.fc10_1, "fc7")
-            fc_dropout10 = tf.nn.dropout(fc11, keep_prob=keep_prob)
-            '''
+            roi_add8 = tf.keras.layers.Add()([pooled_features6, pooled_features7])
+            roi_add9 = tf.reduce_sum(roi_add8, axis=1)
+            shape = roi_add9.get_shape().as_list()
+            dim = 1
+            for d in shape[1:]:
+                dim *= d
+            roi_add9 = tf.reshape(roi_add9, [-1, dim])
 
-            W11 = utils.weight_variable([4096, 4 * (self.n_classes - 1)], name="W6")
+            fc9_w = tf.reshape(self.vgg_fc["fc6"][0], [dim, 4096])
+            fc9 = tf.nn.bias_add(tf.matmul(roi_add9, fc9_w), self.vgg_fc["fc6"][1])
+            fc_dropout9 = tf.nn.dropout(fc9, keep_prob=keep_prob)
+
+            fc10_w = tf.reshape(self.vgg_fc["fc7"][0], [4096, 4096])
+            fc10 = tf.nn.bias_add(tf.matmul(fc_dropout9, fc10_w), self.vgg_fc["fc7"][1])
+            fc_dropout10 = tf.nn.dropout(fc10, keep_prob=keep_prob)
+
+            W11 = utils.weight_variable([4096, 4 * (self.n_classes - 1)], name="W11")
             b11 = utils.bias_variable([4 * (self.n_classes - 1)], name="b11")
-            fc11 = tf.nn.bias_add(tf.matmul(fc10, W11), b11)
+            fc11 = tf.nn.bias_add(tf.matmul(fc_dropout10, W11), b11)
         
         return fc11
 
     def build_pose_optimizer(self, loss_val, var_list):
-        pose_optimizer = tf.train.AdamOptimizer(self.pose_learning_rate)
-        pose_grads = pose_optimizer.compute_gradients(loss_val, var_list=var_list)
-        if self.debug:
-            # print(len(var_list))
-            for grad, var in pose_grads:
-                utils.add_gradient_summary(grad, var)
-        return pose_optimizer.apply_gradients(pose_grads)
+        with tf.variable_scope("pose"):
+            pose_optimizer = tf.train.AdamOptimizer(self.pose_learning_rate)
+            pose_grads = pose_optimizer.compute_gradients(loss_val, var_list=var_list)
+            if self.debug:
+                # print(len(var_list))
+                for grad, var in pose_grads:
+                    utils.add_gradient_summary(grad, var)
+            return pose_optimizer.apply_gradients(pose_grads)
 
     def vgg_net(self, weights, image):
         layers = (
@@ -294,8 +307,27 @@ class DP:
             elif kind == 'pool':
                 current = utils.avg_pool_2x2(current)
             net[name] = current
+
         return net    
 
-    def attach_saver(self):
+    def vgg_net_fc(self, weights):
+        # matconvnet: weights are [width, height, in_channels, out_channels]
+        # tensorflow: weights are [height, width, in_channels, out_channels]
+        fc_net = {}
+        kernels_fc6, bias_fc6 = weights[37][0][0][0][0]
+        kernels_fc6 = utils.get_variable(np.transpose(kernels_fc6, (1, 0, 2, 3)), name="fc6_w")
+        bias_fc6 = utils.get_variable(bias_fc6.reshape(-1), name="fc6_b")
+        fc_net["fc6"] = (kernels_fc6, bias_fc6)
+
+        kernels_fc7, bias_fc7 = weights[39][0][0][0][0]
+        kernels_fc7 = utils.get_variable(np.transpose(kernels_fc7, (1, 0, 2, 3)), name="fc7_w")
+        bias_fc7 = utils.get_variable(bias_fc7.reshape(-1), name="fc7_b")
+        fc_net["fc7"] = (kernels_fc7, bias_fc7)
+
+        return fc_net
+
+    def attach_saver(self, mode):
         self.use_tf_saver = True
-        self.saver_tf = tf.train.Saver(max_to_keep=2)
+        #save_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=mode)
+        save_vars = tf.trainable_variables(scope=mode)
+        self.saver_tf = tf.train.Saver(save_vars, max_to_keep=1)
