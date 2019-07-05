@@ -105,7 +105,7 @@ class Batch:
         stack = np.moveaxis(stack, 0, -1)
         stack_centerxyz = stack_centerx + stack_centery + stack_centerz
         stack_centerxyz = np.asarray(stack_centerxyz)
-        stack_centerxyz = np.moveaxis(stack_centerxyz, 0, -1)
+        stack_centerxyz = np.transpose(stack_centerxyz, [1, 2, 0])
         return stack, stack_centerxyz
 
     def load_and_preprocess_image(self, path, label):

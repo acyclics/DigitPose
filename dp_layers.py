@@ -140,10 +140,7 @@ class DP:
         self.centers_keep_probability = tf.placeholder(tf.float32, name="centers_keep_probabilty")
         self.centers_annotation = tf.placeholder(tf.int32, shape=[None, self.IMAGE_WH, self.IMAGE_WH, 3 * (self.n_classes - 1)], name="centers_annotation")
         self.centers_pred = self.build_centers_layers(self.image, self.centers_keep_probability)
-        #centers_loss = tf.reduce_mean((tf.nn.sparse_softmax_cross_entropy_with_logits(logits=labels_logits,
-        #                                                                      labels=tf.squeeze(labels_annotation, squeeze_dims=[3]),
-        #                                                                      name="centers_entropy")))
-        centers_loss = tf.losses.absolute_difference(labels=self.centers_annotation, predictions=self.centers_pred)
+        centers_loss = tf.losses.huber_loss(labels=self.centers_annotation, predictions=self.centers_pred, weights=1.0, scope="centers")
         centers_loss_summary = tf.summary.scalar("centers_entropy", centers_loss)
         centers_trainable_var = tf.trainable_variables(scope="centers")
         if self.debug:
@@ -199,17 +196,31 @@ class DP:
             W_t3 = utils.weight_variable([16, 16, 3 * (self.n_classes - 1), deconv_shape2[3].value], name="W_t3")
             b_t3 = utils.bias_variable([3 * (self.n_classes - 1)], name="b_t3")
             conv_t3 = utils.conv2d_transpose_strided(fuse_2, W_t3, b_t3, output_shape=deconv_shape3, stride=8)
+            #tanh_t3 = tf.math.sigmoid(conv_t3)
+            for i in range(0, 3 * (self.n_classes - 1), 3):
+                current = tf.math.sigmoid(conv_t3[:, :, :, i:i+2])
+                if i == 0:
+                    tanh_t3 = current
+                else:
+                    tanh_t3 = tf.concat([tanh_t3, current], axis=-1)
+                tanh_t3 = tf.concat([tanh_t3, tf.nn.relu(conv_t3[:, :, :, i+2:i+3])], axis=-1)
 
-        return conv_t3
+        return tanh_t3
 
     def build_centers_optimizer(self, loss_val, var_list):
         with tf.variable_scope("centers"):
             centers_optimizer = tf.train.AdamOptimizer(self.centers_learning_rate)
-            centers_grads = centers_optimizer.compute_gradients(loss_val, var_list=var_list)
+            '''
+            centers_grads, centers_variables = zip(*centers_optimizer.compute_gradients(loss_val, var_list=var_list))
             if self.debug:
                 # print(len(var_list))
                 for grad, var in centers_grads:
                     utils.add_gradient_summary(grad, var)
+            centers_grads, _ = tf.clip_by_global_norm(centers_grads, 5.0)
+            
+            return centers_optimizer.apply_gradients(zip(centers_grads, centers_variables))
+            '''
+            centers_grads = centers_optimizer.compute_gradients(loss_val, var_list=var_list)
             return centers_optimizer.apply_gradients(centers_grads)
 
     def build_pose_branch(self):
@@ -329,5 +340,7 @@ class DP:
     def attach_saver(self, mode):
         self.use_tf_saver = True
         #save_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=mode)
-        save_vars = tf.trainable_variables(scope=mode)
+        save_vars = []
+        for branch in mode:
+            save_vars += tf.trainable_variables(scope=branch)
         self.saver_tf = tf.train.Saver(save_vars, max_to_keep=1)

@@ -26,7 +26,7 @@ class Hough:
                 self.roi_classes_maxx[labels[x][y]] = max(x, self.roi_classes_maxx[labels[x][y]])
                 self.roi_classes_miny[labels[x][y]] = min(y, self.roi_classes_miny[labels[x][y]])
                 self.roi_classes_maxy[labels[x][y]] = max(y, self.roi_classes_maxy[labels[x][y]])
-                if labels[x][y] != self.n_classes - 1:
+                if labels[x][y] != 0:
                     self.incre_pixels_along_line( labels[x][y], labels, directionsx[x][y], directionsy[x][y], (x, y) )
                     self.depth_classes[labels[x][y]] += distancez[x][y]
     
@@ -39,12 +39,12 @@ class Hough:
         x1, y1  = self.locate_endpoint(point[0], point[1], unitx, unity)
         pts = self.bresenham_line(point[0], point[1], x1, y1)
         for p in pts:
-            if labels[int(p[0])][int(p[1])] != self.n_classes - 1:
+            if labels[int(p[0])][int(p[1])] != 0:
                 self.img_classes[class_no][int(p[0])][int(p[1])] += 1
     
     def tally_votes(self):
         results = []
-        for c in range(self.n_classes - 1):
+        for c in range(1, self.n_classes):
             x, y = np.unravel_index(np.argmax(self.img_classes[c]), self.img_classes[c].shape)
             if len(self.pts_classes[c]) > 0:
                 z = self.depth_classes[c] / len(self.pts_classes[c])
@@ -57,7 +57,7 @@ class Hough:
     
     def get_rois(self):
         rois = []
-        for c in range(self.n_classes - 1):
+        for c in range(1, self.n_classes):
             roi = self.calculate_roi(c)
             rois.append(roi)
         return rois

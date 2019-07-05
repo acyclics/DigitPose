@@ -39,7 +39,7 @@ def assess_DP():
     IMAGE_HW = 224
     model_dir = "./data/imagenet-vgg-verydeep-19.mat"
     poseCNN = DP(debug=debug, n_classes=n_classes, n_points=n_points, IMAGE_WH=IMAGE_HW, model_dir=model_dir)
-    TRAIN_MODE = "labels"
+    TRAIN_MODE = ["labels", "centers"]
     
     ''' Create Batch '''
     batch = Batch(image_paths, label_paths, label_paths2, label_paths3, n_classes=n_classes, n_points=n_points)
@@ -62,15 +62,19 @@ def assess_DP():
             poseCNN.saver_tf.restore(sess, save_file)
         for epochs in range(N_epochs):
             RGB, LABEL, stack_centerxyz, oriens, coords = batch.get_image_and_label_ALL()
-            feed_dict_labels = {poseCNN.image: RGB, poseCNN.labels_keep_probability: 1.0}
-            labels_pred = sess.run(poseCNN.labels_pred, feed_dict=feed_dict_labels)
-            #bgr = cv2.cvtColor(RGB[0].astype('float32'), cv2.COLOR_RGB2BGR)
+            feed_dict_labels = {poseCNN.image: RGB, poseCNN.labels_keep_probability: 1.0, poseCNN.centers_keep_probability: 1.0}
+            labels_pred, directions = sess.run([poseCNN.labels_pred, poseCNN.centers_pred], feed_dict=feed_dict_labels)
+            bgr = cv2.cvtColor(RGB[0].astype('float32'), cv2.COLOR_RGB2BGR)
             for x in range(224):
                 for y in range(224):
                     if labels_pred[0][x][y] == 1:
                         cv2.circle(RGB[0], (x, y), 1, (0,0,255), -1)
+            directions = np.moveaxis(directions[0], -1, 0)
+            hough_layer = Hough(n_classes, 224)
+            hough_layer.cast_votes(labels_pred[0], directions[0], directions[1], directions[2])
+            centers = hough_layer.tally_votes()[0]
+            cv2.circle(RGB[0], (centers[0], centers[1]), 3, (0,255,0), -1)
             cv2.imshow("image", RGB[0])
             cv2.waitKey(0)
-
 
 assess_DP()
