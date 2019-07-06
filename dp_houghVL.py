@@ -12,10 +12,10 @@ class Hough:
         self.image_WH = image_WH
         self.img_classes = np.zeros([n_classes, image_WH, image_WH])
         self.depth_classes = np.zeros([n_classes])
-        self.roi_classes_minx = np.full([n_classes], image_WH)
-        self.roi_classes_maxx = np.full([n_classes], 0) 
-        self.roi_classes_miny = np.full([n_classes], image_WH) 
-        self.roi_classes_maxy = np.full([n_classes], 0) 
+        self.roi_classes_minx = np.full([n_classes], np.inf)
+        self.roi_classes_maxx = np.full([n_classes], -np.inf) 
+        self.roi_classes_miny = np.full([n_classes], np.inf) 
+        self.roi_classes_maxy = np.full([n_classes], -np.inf) 
         self.pts_classes = [[] for _ in range(n_classes)]
 
     def cast_votes(self, labels, directionsx, directionsy, distancez):
@@ -60,7 +60,7 @@ class Hough:
         for c in range(1, self.n_classes):
             roi = self.calculate_roi(c)
             rois.append(roi)
-        return rois
+        return np.asarray([ rois ], dtype='float32')
 
     def locate_endpoint(self, x0, y0, unitx, unity):
         # Infinite slope handling
@@ -118,9 +118,33 @@ class Hough:
         return line
     
     def calculate_roi(self, class_no):
-        minx = self.roi_classes_minx[class_no]
-        maxx = self.roi_classes_maxx[class_no]
-        miny = self.roi_classes_miny[class_no]
-        maxy = self.roi_classes_maxy[class_no]
-        return [minx / self.image_WH, miny / self.image_WH, maxx / self.image_WH, maxy / self.image_WH]
+        if self.roi_classes_minx[class_no] == np.inf:
+            minx = 0
+        else:
+            minx = self.roi_classes_minx[class_no]
+        if self.roi_classes_maxx[class_no] == -np.inf:
+            maxx = self.image_WH - 1
+        else:
+            maxx = self.roi_classes_maxx[class_no]
+        if self.roi_classes_miny[class_no] == np.inf:
+            miny = 0
+        else:
+            miny = self.roi_classes_miny[class_no]
+        if self.roi_classes_maxy[class_no] == -np.inf:
+            maxy = self.image_WH - 1
+        else:
+            maxy = self.roi_classes_maxy[class_no]
+        if minx == maxx:
+            if minx == 0:
+                maxx = self.image_WH - 1
+            else:
+                minx = 0
+        if miny == maxy:
+            if miny == 0:
+                maxy = self.image_WH - 1
+            else:
+                miny = 0
+
+        #return [minx / (self.image_WH - 1), miny / (self.image_WH - 1), maxx / (self.image_WH - 1), maxy / (self.image_WH - 1)]
+        return [0.5,0.2,0.7,0.4]
         

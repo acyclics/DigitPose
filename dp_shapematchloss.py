@@ -43,7 +43,7 @@ def SLoss_accuracy(q_true, q_pred, n_classes):
     for i in range(0, 4 * n_classes, 4):
         GTR = tfq.Quaternion(tf.slice(q_true, [0, i], [1, 4])).as_rotation_matrix()
         ESTR = tfq.Quaternion(tf.slice(q_pred, [0, i], [1, 4])).as_rotation_matrix()
-        equals = tf.equal(tf_truncate(GTR, 1), tf_truncate(ESTR, 1))
+        equals = tf.equal(GTR, ESTR)
         losses.append(tf.reduce_mean(tf.cast(equals, dtype=tf.float32)))
     acc = losses[0]
     for l in range(1, len(losses)):
@@ -113,12 +113,12 @@ class SML:
 
         with tf.Session() as sess:
             sess.run(tf.global_variables_initializer())
-            QE = [[1, 1, 1, 1]]
-            QT = [[0, 0, 0, 1]]
-            C = [[[5, 5, 10]]]
+            QE = [[0, -1, 1, 0]]
+            QT = [[-0.6818945 , -0.01190251, -0.01276388,  0.7312423 ]]
+            C = [[[0.50625, 2.025  , 6.3 ]]]
             feed_dict = {QUAT_EST: QE, QUAT_TRU: QT, COORDS: C}
             while True:
-                a= sess.run([self.LOSS], feed_dict=feed_dict)
+                a= sess.run([loss], feed_dict=feed_dict)
                 print(a)
     
     def test_loss_function(self, sess, QE, QT, C):
@@ -131,3 +131,6 @@ class SML:
         feed_dict = {QUAT_EST: QE, QUAT_TRU: QT, COORDS: C}
         a = sess.run(self.LOSS, feed_dict=feed_dict)
         print(a)
+
+#s = SML()
+#s.test_loss_function1()

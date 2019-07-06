@@ -39,7 +39,7 @@ def train_DP():
     IMAGE_HW = 224
     model_dir = "./data/imagenet-vgg-verydeep-19.mat"
     poseCNN = DP(debug=debug, n_classes=n_classes, n_points=n_points, IMAGE_WH=IMAGE_HW, model_dir=model_dir)
-    TRAIN_MODE = ["labels", "centers"]
+    TRAIN_MODE = ["labels", "centers", "pose"]
     
     ''' Create Batch '''
     batch = Batch(image_paths, label_paths, label_paths2, label_paths3, n_classes=n_classes, n_points=n_points)
@@ -49,11 +49,11 @@ def train_DP():
     ''' Create Saver '''
     save_file = "./models/dp_train_new_1st/model.ckpt"
     LOAD_MODEL = True
-    FIRST = False
+    FIRST = True
     if FIRST and LOAD_MODEL:
         PREV_TRAIN_MODE = TRAIN_MODE[0:-1]
         poseCNN.attach_saver(PREV_TRAIN_MODE)
-    elif LOAD_MODEL:
+    else:
         poseCNN.attach_saver(TRAIN_MODE)
     
     ''' Create TF session '''
@@ -82,13 +82,13 @@ def train_DP():
                 feed_dict = {poseCNN.image: RGB, poseCNN.centers_annotation: stack_centerxyz, poseCNN.centers_keep_probability: 0.85}
                 sess.run(poseCNN.centers_train_op, feed_dict=feed_dict)
             elif TRAIN_MODE[-1] == "pose":
-                feed_dict = {poseCNN.image: RGB}
+                feed_dict = {poseCNN.image: RGB, poseCNN.labels_keep_probability: 1.0, poseCNN.centers_keep_probability: 1.0}
                 labels_pred, directions = sess.run([poseCNN.labels_pred, poseCNN.centers_pred], feed_dict=feed_dict)
                 directions = np.moveaxis(directions[0], -1, 0)
                 hough_layer = Hough(n_classes, IMAGE_HW)
                 hough_layer.cast_votes(labels_pred[0], directions[0], directions[1], directions[2])
                 rois = hough_layer.get_rois()
-                feed_dict = {poseCNN.image: RGB, poseCNN.rois: [rois], poseCNN.pose_annotation: oriens, poseCNN.coordinates: coords, poseCNN.pose_keep_probability: 0.85}
+                feed_dict = {poseCNN.image: RGB, poseCNN.rois: rois, poseCNN.pose_annotation: oriens, poseCNN.coordinates: coords, poseCNN.pose_keep_probability: 0.85}
                 sess.run(poseCNN.pose_train_op, feed_dict=feed_dict)
             else:
                 print("Invalid TRAIN MODE")
@@ -109,15 +109,16 @@ def train_DP():
                     avg_centers_acc += centers_acc
                     print("Epoch:", epochs, "|  Centers accuracy =", avg_centers_acc / 1.0)
                 elif TRAIN_MODE[-1] == "pose":
-                    feed_dict = {poseCNN.image: RGB}
+                    feed_dict = {poseCNN.image: RGB, poseCNN.labels_keep_probability: 1.0, poseCNN.centers_keep_probability: 1.0}
                     labels_pred, directions = sess.run([poseCNN.labels_pred, poseCNN.centers_pred], feed_dict=feed_dict)
                     directions = np.moveaxis(directions[0], -1, 0)
                     hough_layer = Hough(n_classes, IMAGE_HW)
                     hough_layer.cast_votes(labels_pred[0], directions[0], directions[1], directions[2])
                     rois = hough_layer.get_rois()
-                    feed_dict = {poseCNN.image: RGB, poseCNN.rois: [rois], poseCNN.pose_annotation: oriens, poseCNN.coordinates: coords, poseCNN.pose_keep_probability: 1.0}
+                    feed_dict = {poseCNN.image: RGB, poseCNN.rois: rois, poseCNN.pose_annotation: oriens, poseCNN.coordinates: coords, poseCNN.pose_keep_probability: 1.0}
                     pose_acc = sess.run(poseCNN.pose_pred_accuracy, feed_dict=feed_dict)
                     print("Epoch:", epochs, "|  Pose accuracy =", pose_acc)
                 poseCNN.saver_tf.save(sess, save_file)
+                print("Model saved")
 
 train_DP()

@@ -225,34 +225,46 @@ class DP:
 
     def build_pose_branch(self):
         self.pose_keep_probability = tf.placeholder(tf.float32, name="pose_keep_probabilty")
-        self.pose_annotation = tf.placeholder(tf.float32, shape=[1, 4 * (self.n_classes - 1)], name="pose_annotation")
+        self.pose_annotation = tf.placeholder(tf.float32, shape=[None, 4 * (self.n_classes - 1)], name="pose_annotation")
         self.coordinates = tf.placeholder(tf.float32, shape=[self.n_points, 1, 3], name="pose_coordinates")
-        self.rois = tf.placeholder(tf.float32, shape=[1, None, 4])
+        self.rois = tf.placeholder(tf.float32, shape=[None, None, 4])
 
-        pose_pred = self.build_pose_layers(self.image, self.pose_keep_probability, self.rois)
-        pose_loss = SLoss(q_true=self.pose_annotation, q_pred=pose_pred, M=self.coordinates, n_classes=self.n_classes - 1, no_of_points=self.n_points)
+        self.pose_pred = self.build_pose_layers(self.image, self.pose_keep_probability, self.rois)
+        pose_loss = SLoss(q_true=self.pose_annotation, q_pred=self.pose_pred, M=self.coordinates, n_classes=self.n_classes - 1, no_of_points=self.n_points)
         pose_loss_summary = tf.summary.scalar("pose_entropy", pose_loss)
         pose_trainable_var = tf.trainable_variables(scope="pose")
         if self.debug:
             for var in labels_trainable_var:
                 utils.add_to_regularization_and_summary(var)
         self.pose_train_op = self.build_pose_optimizer(pose_loss, pose_trainable_var)
-        self.pose_pred_accuracy = SLoss_accuracy(q_true=self.pose_annotation, q_pred=pose_pred, n_classes=self.n_classes - 1)
+        self.pose_pred_accuracy = SLoss_accuracy(q_true=self.pose_annotation, q_pred=self.pose_pred, n_classes=self.n_classes - 1)
 
         print("Setting up pose summary op...")
         pose_summary_op = tf.summary.merge_all()
     
     def build_pose_layers(self, image, keep_prob, rois):
+        TRUNCATE = 0
         with tf.variable_scope("pose"):
-            roi_layer6 = ROIPoolingLayer(self.roi_pool_h, self.roi_pool_w)
-            pooled_features6 = roi_layer6([self.image_net["conv5_3"], rois])
-            #pooled_features9_1 = tf.where(tf.is_nan(self.pooled_features9_1), tf.ones_like(self.pooled_features9_1) * self.TRUNCATE, self.pooled_features9_1)
-            #pooled_features9_1 = tf.where(tf.is_inf(self.pooled_features9_1), tf.ones_like(self.pooled_features9_1) * self.TRUNCATE, self.pooled_features9_1)
             
+            shape6 = tf.shape(self.image_net["conv5_3"])
+            deconv_shape6 = tf.stack([shape6[0], 56, 56, 512])
+            W_6 = utils.weight_variable([4, 4, 512, 512], name="W_6")
+            b_6 = utils.bias_variable([512], name="b_6")
+            conv_6 = utils.conv2d_transpose_strided(self.image_net["conv5_3"], W_6, b_6, output_shape=deconv_shape6, stride=4)
+
+            roi_layer6 = ROIPoolingLayer(self.roi_pool_h, self.roi_pool_w)
+            pooled_features6 = roi_layer6([conv_6, rois])
+            pooled_features6 = tf.nn.dropout(pooled_features6, keep_prob=keep_prob)
+            
+            shape7 = tf.shape(self.image_net["conv4_3"])
+            deconv_shape7 = tf.stack([shape7[0], 56, 56, 512])
+            W_7 = utils.weight_variable([2, 2, 512, 512], name="W_7")
+            b_7 = utils.bias_variable([512], name="b_7")
+            conv_7 = utils.conv2d_transpose_strided(self.image_net["conv4_3"], W_7, b_7, output_shape=deconv_shape7, stride=2)
+
             roi_layer7 = ROIPoolingLayer(self.roi_pool_h, self.roi_pool_w)
-            pooled_features7 = roi_layer7([self.image_net["conv4_3"], rois])
-            #pooled_features9_2 = tf.where(tf.is_nan(self.pooled_features9_2), tf.ones_like(self.pooled_features9_2) * self.TRUNCATE, self.pooled_features9_2)
-            #pooled_features9_2 = tf.where(tf.is_inf(self.pooled_features9_2), tf.ones_like(self.pooled_features9_2) * self.TRUNCATE, self.pooled_features9_2)
+            pooled_features7 = roi_layer7([conv_7, rois])
+            pooled_features7 = tf.nn.dropout(pooled_features7, keep_prob=keep_prob)
 
             roi_add8 = tf.keras.layers.Add()([pooled_features6, pooled_features7])
             roi_add9 = tf.reduce_sum(roi_add8, axis=1)
@@ -273,18 +285,25 @@ class DP:
             W11 = utils.weight_variable([4096, 4 * (self.n_classes - 1)], name="W11")
             b11 = utils.bias_variable([4 * (self.n_classes - 1)], name="b11")
             fc11 = tf.nn.bias_add(tf.matmul(fc_dropout10, W11), b11)
+            tanh11 = tf.math.tanh(fc11)
         
-        return fc11
+        return tanh11
 
     def build_pose_optimizer(self, loss_val, var_list):
         with tf.variable_scope("pose"):
             pose_optimizer = tf.train.AdamOptimizer(self.pose_learning_rate)
+            '''
             pose_grads = pose_optimizer.compute_gradients(loss_val, var_list=var_list)
             if self.debug:
                 # print(len(var_list))
                 for grad, var in pose_grads:
                     utils.add_gradient_summary(grad, var)
-            return pose_optimizer.apply_gradients(pose_grads)
+            '''
+            pose_grads, pose_variables = zip(*pose_optimizer.compute_gradients(loss_val, var_list=var_list))
+            pose_grads, _ = tf.clip_by_global_norm(pose_grads, 2.5)
+            
+            return pose_optimizer.apply_gradients(zip(pose_grads, pose_variables))
+            #return pose_optimizer.apply_gradients(pose_grads)
 
     def vgg_net(self, weights, image):
         layers = (
