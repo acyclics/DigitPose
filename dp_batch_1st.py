@@ -3,10 +3,6 @@ import tensorflow as tf
 import numpy as np
 import cv2
 
-colors = [ [0, 0, 0], [0, 128, 0], [0, 0, 128], [0, 128, 128], [128, 0, 0],
-           [128, 0, 128], [128, 128, 0], [128, 128, 128], [0, 0, 64],
-           [0, 0, 192], [0, 128, 64], [0, 128, 192], [128, 0, 64], [128, 0, 192] ]
-
 class Batch:
     def __init__(self, im_paths, im_labels, im_orientations, im_coordinates, im_numbers, n_classes, n_points, IMAGE_HW=224):
         self.im_paths = im_paths
@@ -25,15 +21,17 @@ class Batch:
     
     def get_image_and_label_upToCenters(self):
         sample = random.randint(0, len(self.im_paths) - 1)
-        img, label, stack_centerxyz = self.load_and_preprocess_image_upToCenters(self.im_paths[sample], self.im_labels[sample], self.im_numbers[sample])
-        return [img], [label], [stack_centerxyz]
+        img, label, stack_centerxyz, mask = self.load_and_preprocess_image_upToCenters(self.im_paths[sample], self.im_labels[sample], self.im_numbers[sample])
+        return [img], [label], [stack_centerxyz], [mask]
 
     def get_image_and_label_ALL(self):
         sample = random.randint(0, len(self.im_paths) - 1)
-        img, label, stack_centerxyz = self.load_and_preprocess_image_upToCenters(self.im_paths[sample], self.im_labels[sample])
+        img, label, stack_centerxyz, mask = self.load_and_preprocess_image_upToCenters(self.im_paths[sample], self.im_labels[sample], self.im_numbers[sample])
         orientation = self.preprocess_orientations(self.im_orientations[sample])
         coordinates = self.preprocess_coordinates(self.im_coordinates[sample])
-        return [img], [label], [stack_centerxyz], [orientation], [coordinates]
+        numbers = self.preprocess_numbers(self.im_numbers[sample])
+
+        return [img], [label], [stack_centerxyz], [mask], [orientation], [coordinates], [numbers]
 
     def preprocess_image(self, image):
         image = cv2.imread(image)
@@ -80,6 +78,11 @@ class Batch:
         allcoords = np.asarray(allcoords)
         return allcoords
 
+    def preprocess_numbers(self, numbers_path):
+        with open(numbers_path, "r") as file:
+            nums = file.readlines()
+        return int(nums[0])
+
     def preprocess_label_upToCenters(self, label_path, numbers_path):
         stack = []
         stack_centerx, stack_centery, stack_centerz = [], [], []
@@ -87,8 +90,9 @@ class Batch:
             gts = file.readlines()
         with open(numbers_path, "r") as file:
             nums = file.readlines()
-        for _ in range(self.n_classes - 1):
+        for _ in range(1):
             label = np.zeros([self.IMAGE_HW, self.IMAGE_HW])
+            mask = np.zeros([self.IMAGE_HW, self.IMAGE_HW])
             directionx = np.zeros([self.IMAGE_HW, self.IMAGE_HW])
             directiony = np.zeros([self.IMAGE_HW, self.IMAGE_HW])
             directionz = np.zeros([self.IMAGE_HW, self.IMAGE_HW])
@@ -97,6 +101,7 @@ class Batch:
                 i = int(pts[0])
                 j = self.IMAGE_HW - 1 - int(pts[1])
                 label[i][j] = int(nums[0])
+                mask[i][j] = 1
                 directionx[i][j] = float(pts[2])
                 directiony[i][j] = -float(pts[3])
                 directionz[i][j] = float(pts[4])
@@ -106,15 +111,17 @@ class Batch:
             stack_centerz.append(directionz)
         stack = np.asarray(stack)
         stack = np.moveaxis(stack, 0, -1)
+        mask = np.asarray([mask])
+        mask = np.moveaxis(mask, 0, -1)
         stack_centerxyz = stack_centerx + stack_centery + stack_centerz
         stack_centerxyz = np.asarray(stack_centerxyz)
         stack_centerxyz = np.transpose(stack_centerxyz, [1, 2, 0])
-        return stack, stack_centerxyz
+        return stack, stack_centerxyz, mask
 
     def load_and_preprocess_image(self, path, label):
         return self.preprocess_image(path), self.preprocess_label(label)
     
     def load_and_preprocess_image_upToCenters(self, path, label, number):
         img = self.preprocess_image(path)
-        stack, stack_centerxyz = self.preprocess_label_upToCenters(label, number)
-        return img, stack, stack_centerxyz
+        stack, stack_centerxyz, mask = self.preprocess_label_upToCenters(label, number)
+        return img, stack, stack_centerxyz, mask

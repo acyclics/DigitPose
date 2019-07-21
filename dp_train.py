@@ -8,29 +8,35 @@ import pathlib
 import cv2
 
 def train_DP():
-    ''' Load images '''
+    ''' Load Snapshots '''
     imagedir = os.path.join(".\\data", "DigitPose-Frame", "Snapshots")
     imagedir = pathlib.Path(imagedir)
     image_paths = list(imagedir.glob('*.*'))
     image_paths = [str(path) for path in image_paths]
 
-    ''' Create labels '''
-    labelsdir = os.path.join(".\\data", "DigitPose-Frame", "Groundtruths")
-    labelsdir = pathlib.Path(labelsdir)
-    label_paths = list(labelsdir.glob('*'))
-    label_paths = [str(path) for path in label_paths]
+    ''' Load Groundtruths '''
+    gtdir = os.path.join(".\\data", "DigitPose-Frame", "Groundtruths")
+    gtdir = pathlib.Path(gtdir)
+    gt_paths = list(gtdir.glob('*'))
+    gt_paths = [str(path) for path in gt_paths]
 
-    ''' Create labels2 '''
-    labelsdir2 = os.path.join(".\\data", "DigitPose-Frame", "Orientations")
-    labelsdir2 = pathlib.Path(labelsdir2)
-    label_paths2 = list(labelsdir2.glob('*'))
-    label_paths2 = [str(path) for path in label_paths2]
+    ''' Load Orientations '''
+    oriendir = os.path.join(".\\data", "DigitPose-Frame", "Orientations")
+    oriendir = pathlib.Path(oriendir)
+    orien_paths = list(oriendir.glob('*'))
+    orien_paths = [str(path) for path in orien_paths]
 
-    ''' Create labels3 '''
-    labelsdir3 = os.path.join(".\\data", "DigitPose-Frame", "Points")
-    labelsdir3 = pathlib.Path(labelsdir3)
-    label_paths3 = list(labelsdir3.glob('*'))
-    label_paths3 = [str(path) for path in label_paths3]
+    ''' Load Points '''
+    pts_dir = os.path.join(".\\data", "DigitPose-Frame", "Points")
+    pts_dir = pathlib.Path(pts_dir)
+    pts_paths = list(pts_dir.glob('*'))
+    pts_paths = [str(path) for path in pts_paths]
+
+    ''' Load Numbers '''
+    nums_dir = os.path.join(".\\data", "DigitPose-Frame", "Numbers")
+    nums_dir = pathlib.Path(nums_dir)
+    num_paths = list(nums_dir.glob('*'))
+    num_paths = [str(path) for path in num_paths]
 
     ''' Create CNN '''
     n_classes = 2
@@ -42,7 +48,8 @@ def train_DP():
     TRAIN_MODE = ["labels", "centers", "pose"]
     
     ''' Create Batch '''
-    batch = Batch(image_paths, label_paths, label_paths2, label_paths3, n_classes=n_classes, n_points=n_points)
+    batch = Batch(im_paths=image_paths, im_labels=gtdir, im_orientations=oriendir, im_coordinates=pts_dir, im_numbers=nums_dir,
+                  n_classes=n_classes, n_points=n_points)
     N_epochs = 10000000
     N_eval = 10
 
