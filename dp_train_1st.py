@@ -50,6 +50,7 @@ def train_DP():
                   n_classes=n_classes + 1, n_points=n_points)
     N_epochs = 10000000
     N_eval = 10
+    b_size = 2
 
     ''' Create Saver '''
     save_file = "./models/dp_train_1st/model.ckpt"
@@ -68,7 +69,11 @@ def train_DP():
             poseCNN.saver_tf.restore(sess, save_file)
 
         for epochs in range(N_epochs):
-            RGB, LABEL, stack_centerxyz, mask, oriens, coords, num = batch.get_image_and_label_ALL()
+            RGB, LABEL = [], []
+            for b in range(b_size):
+                rgb, label, stack_centerxyz, mask, oriens, coords, num = batch.get_image_and_label_ALL()
+                RGB.append(rgb[0])
+                LABEL.append(label[0])
             feed_dict = {poseCNN.image: RGB, poseCNN.labels_annotation: LABEL, poseCNN.labels_keep_probability: 0.85}
             sess.run(poseCNN.labels_train_op, feed_dict=feed_dict)
 
@@ -78,7 +83,7 @@ def train_DP():
                 feed_dict_labels = {poseCNN.image: RGB, poseCNN.labels_annotation: LABEL, poseCNN.labels_keep_probability: 1.0}
                 labels_acc = poseCNN.labels_pred_accuracy.eval(feed_dict=feed_dict_labels)
                 avg_labels_acc += labels_acc
-                print("Epoch:", epochs, "|  Labels accuracy =", avg_labels_acc / 1.0)
+                print("Epoch:", epochs + 1, "|  Labels accuracy =", avg_labels_acc / 1.0)
                 poseCNN.saver_tf.save(sess, save_file)
 
 train_DP()
