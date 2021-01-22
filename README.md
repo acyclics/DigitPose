@@ -3,9 +3,11 @@ Image segmentation for digits with a CNN trained via Unity-generated images. The
 
 # Demo
 Below are examples of generated images in Unity:
+
  | 
 :-------------------------:|:-------------------------:
 ![](https://github.com/acyclics/DigitPose/blob/master/examples%26tests/snap1.png)  |  ![](https://github.com/acyclics/DigitPose/blob/master/examples%26tests/snap2.png)
 
 The trained CNN's segmentation when deployed on a real system:
+
 ![](https://github.com/acyclics/DigitPose/blob/master/examples%26tests/digitpose_demo.gif)
